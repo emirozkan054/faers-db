@@ -1,0 +1,26 @@
+[project]
+name = "faers-db"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.18.4",
+    "orjson>=3.11.7",
+    "polars>=1.39.0",
+    "psycopg[binary]>=3.3.3",
+    "pyarrow>=23.0.1",
+    "pydantic-settings>=2.13.1",
+    "python-dateutil>=2.9.0.post0",
+    "rich>=14.3.3",
+    "sqlalchemy>=2.0.48",
+    "typer>=0.24.1",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.19.1",
+    "pytest>=9.0.2",
+    "pytest-cov>=7.0.0",
+    "ruff>=0.15.6",
+]
