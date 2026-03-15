@@ -1,34 +1,97 @@
+import csv
 import hashlib
-import polars as pl
 from pathlib import Path
 
-def hash_row(row: dict) -> str:
-    payload = "|".join("" if v is None else str(v) for _, v in sorted(row.items()))
-    return hashlib.sha256(payload.encode("utf-8", errors="ignore")).hexdigest()
+import orjson
+from psycopg.types.json import Jsonb
 
-def load_text_file(path: Path) -> pl.DataFrame:
-    # Let the file itself define the header/delimiter assumptions you validate during testing.
-    # Start conservative, then lock parser settings once your first quarter loads succeed.
-    return pl.read_csv(
-        path,
-        infer_schema_length=1000,
-        ignore_errors=True,
-        null_values=["", "NULL", "null"],
-        truncate_ragged_lines=True,
-    )
 
-def dataframe_to_raw_records(df: pl.DataFrame) -> list[dict]:
-    cols = [c.upper().strip() for c in df.columns]
-    df.columns = cols
-    records = []
-    for i, row in enumerate(df.iter_rows(named=True), start=1):
-        cleaned = {
-            k: (None if v == "" else v)
-            for k, v in row.items()
-        }
-        records.append({
-            "row_num": i,
-            "raw_record": cleaned,
-            "row_hash": hash_row(cleaned),
-        })
-    return records
+BATCH_SIZE = 5000
+
+
+def clean_colname(name: str) -> str:
+    return name.replace("\ufeff", "").replace("ï»¿", "").strip().upper()
+
+
+def clean_value(value: str | None) -> str | None:
+    if value is None:
+        return None
+    s = str(value).strip()
+    return s if s != "" else None
+
+
+def stable_row_hash(record: dict) -> str:
+    payload = orjson.dumps(record, option=orjson.OPT_SORT_KEYS)
+    return hashlib.sha256(payload).hexdigest()
+
+
+def iter_delimited_records(file_path: Path, delimiter: str = "$"):
+    with open(file_path, "r", encoding="utf-8-sig", errors="replace", newline="") as f:
+        reader = csv.reader(f, delimiter=delimiter)
+
+        try:
+            raw_header = next(reader)
+        except StopIteration:
+            return
+
+        header = [clean_colname(col) for col in raw_header]
+
+        for row_num, row in enumerate(reader, start=1):
+            if not row or all((x.strip() == "" for x in row)):
+                continue
+
+            # Common FAERS/AERS quirk: trailing delimiter adds one empty column
+            if len(row) == len(header) + 1 and row[-1] == "":
+                row = row[:-1]
+
+            if len(row) < len(header):
+                row = row + [""] * (len(header) - len(row))
+            elif len(row) > len(header):
+                # Keep only expected columns for now
+                row = row[: len(header)]
+
+            record = {
+                header[i]: clean_value(row[i])
+                for i in range(len(header))
+            }
+
+            yield row_num, record
+
+
+def insert_demo_raw_rows(conn, source_file_id: int, file_path: Path) -> int:
+    total = 0
+    batch: list[tuple] = []
+
+    sql = """
+        insert into staging.demo_raw (
+            source_file_id,
+            row_num,
+            raw_record,
+            row_hash
+        )
+        values (%s, %s, %s, %s)
+        on conflict (source_file_id, row_num) do nothing
+    """
+
+    with conn.cursor() as cur:
+        for row_num, record in iter_delimited_records(file_path):
+            batch.append(
+                (
+                    source_file_id,
+                    row_num,
+                    Jsonb(record),
+                    stable_row_hash(record),
+                )
+            )
+
+            if len(batch) >= BATCH_SIZE:
+                cur.executemany(sql, batch)
+                total += len(batch)
+                batch.clear()
+
+        if batch:
+            cur.executemany(sql, batch)
+            total += len(batch)
+
+    conn.commit()
+    return total
