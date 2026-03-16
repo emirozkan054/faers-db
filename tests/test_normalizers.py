@@ -1,6 +1,8 @@
 from faersdb.normalize.drug import normalize_drug
 from faersdb.normalize.reac import normalize_reac
 from faersdb.normalize.outc import normalize_outc
+from faersdb.normalize.ther import normalize_ther
+from faersdb.normalize.indi import normalize_indi
 
 
 def test_normalize_drug_prefers_primaryid_and_maps_fields():
@@ -33,3 +35,23 @@ def test_normalize_outc_picks_outc_cod_then_outcome_fallback():
     raw2 = {"ISR": "790", "OUTCOME": "LT"}
     out2 = normalize_outc(raw2, {"source_quarter": "2014q3", "source_system": "FAERS"})
     assert out2["outcome"] == "LT"
+
+
+def test_normalize_ther_maps_duration_and_dates():
+    raw = {"ISR": "800", "DRUG_SEQ": "2", "START_DT": "20231201", "END_DT": "20231220", "DUR": "19", "DUR_COD": "DY"}
+    out = normalize_ther(raw, {"source_quarter": "2023q4", "source_system": "FAERS"})
+    assert out["source_report_id"] == "800"
+    assert out["drug_seq"] == 2
+    assert out["start_dt"].isoformat() == "2023-12-01"
+    assert out["dur"] == 19
+    assert out["dur_cod"] == "DY"
+
+
+def test_normalize_indi_maps_preferred_term_and_fallback():
+    raw1 = {"ISR": "801", "DRUG_SEQ": "1", "INDI_PT": "HEADACHE"}
+    out1 = normalize_indi(raw1, {"source_quarter": "2023q4", "source_system": "FAERS"})
+    assert out1["indi_pt"] == "HEADACHE"
+
+    raw2 = {"ISR": "802", "INDICATION": "MIGRAINE"}
+    out2 = normalize_indi(raw2, {"source_quarter": "2023q4", "source_system": "FAERS"})
+    assert out2["indi_pt"] == "MIGRAINE"

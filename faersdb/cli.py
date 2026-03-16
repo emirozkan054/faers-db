@@ -12,11 +12,15 @@ from faersdb.staging_load import (
     insert_drug_raw_rows,
     insert_reac_raw_rows,
     insert_outc_raw_rows,
+    insert_ther_raw_rows,
+    insert_indi_raw_rows,
 )
 from faersdb.normalize.demo import normalize_demo
 from faersdb.normalize.drug import normalize_drug
 from faersdb.normalize.reac import normalize_reac
 from faersdb.normalize.outc import normalize_outc
+from faersdb.normalize.ther import normalize_ther
+from faersdb.normalize.indi import normalize_indi
 
 app = typer.Typer()
 
@@ -143,9 +147,11 @@ def load_staging(kind: str = "DEMO", quarter: str | None = None):
         "DRUG": insert_drug_raw_rows,
         "REAC": insert_reac_raw_rows,
         "OUTC": insert_outc_raw_rows,
+        "THER": insert_ther_raw_rows,
+        "INDI": insert_indi_raw_rows,
     }
     if kind not in loaders:
-        raise typer.BadParameter("Supported kinds: DEMO, DRUG, REAC, OUTC")
+        raise typer.BadParameter("Supported kinds: DEMO, DRUG, REAC, OUTC, THER, INDI")
 
     sql = """
         select source_file_id, source_quarter, file_path
@@ -443,6 +449,178 @@ def normalize_outc_cmd(quarter: str | None = None):
         conn.commit()
 
     typer.echo(f"Normalized OUTC rows. processed={processed}, skipped={skipped}")
+
+
+@app.command()
+def normalize_ther_cmd(quarter: str | None = None):
+    select_sql = """
+        select
+            s.raw_record,
+            f.source_quarter,
+            f.source_system
+        from staging.ther_raw s
+        join etl.source_file f
+          on f.source_file_id = s.source_file_id
+    """
+    params = []
+
+    if quarter:
+        select_sql += " where f.source_quarter = %s"
+        params.append(quarter.lower())
+
+    select_sql += " order by f.source_quarter, s.row_num"
+
+    processed = 0
+    skipped = 0
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(select_sql, params)
+            rows = cur.fetchall()
+
+        with conn.cursor() as cur:
+            for raw_record, source_quarter, source_system in rows:
+                norm = normalize_ther(raw_record, {
+                    "source_quarter": source_quarter,
+                    "source_system": source_system,
+                })
+
+                if not norm["source_report_id"]:
+                    skipped += 1
+                    continue
+
+                case_version_pk = fetch_case_version_pk(
+                    cur,
+                    norm["source_system"],
+                    norm["source_quarter"],
+                    norm["source_report_id"],
+                )
+                if not case_version_pk:
+                    skipped += 1
+                    continue
+
+                cur.execute(
+                    """
+                    insert into core.case_therapy (
+                        case_version_pk,
+                        source_system,
+                        source_quarter,
+                        source_report_id,
+                        drug_seq,
+                        start_dt,
+                        end_dt,
+                        dur,
+                        dur_cod,
+                        raw_ther
+                    )
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    on conflict (source_system, source_quarter, source_report_id, drug_seq, start_dt, end_dt) do update
+                    set
+                        case_version_pk = excluded.case_version_pk,
+                        dur = excluded.dur,
+                        dur_cod = excluded.dur_cod,
+                        raw_ther = excluded.raw_ther
+                    """,
+                    (
+                        case_version_pk,
+                        norm["source_system"],
+                        norm["source_quarter"],
+                        norm["source_report_id"],
+                        norm["drug_seq"],
+                        norm["start_dt"],
+                        norm["end_dt"],
+                        norm["dur"],
+                        norm["dur_cod"],
+                        Jsonb(norm["raw_ther"]),
+                    ),
+                )
+                processed += 1
+
+        conn.commit()
+
+    typer.echo(f"Normalized THER rows. processed={processed}, skipped={skipped}")
+
+
+@app.command()
+def normalize_indi_cmd(quarter: str | None = None):
+    select_sql = """
+        select
+            s.raw_record,
+            f.source_quarter,
+            f.source_system
+        from staging.indi_raw s
+        join etl.source_file f
+          on f.source_file_id = s.source_file_id
+    """
+    params = []
+
+    if quarter:
+        select_sql += " where f.source_quarter = %s"
+        params.append(quarter.lower())
+
+    select_sql += " order by f.source_quarter, s.row_num"
+
+    processed = 0
+    skipped = 0
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(select_sql, params)
+            rows = cur.fetchall()
+
+        with conn.cursor() as cur:
+            for raw_record, source_quarter, source_system in rows:
+                norm = normalize_indi(raw_record, {
+                    "source_quarter": source_quarter,
+                    "source_system": source_system,
+                })
+
+                if not norm["source_report_id"] or not norm["indi_pt"]:
+                    skipped += 1
+                    continue
+
+                case_version_pk = fetch_case_version_pk(
+                    cur,
+                    norm["source_system"],
+                    norm["source_quarter"],
+                    norm["source_report_id"],
+                )
+                if not case_version_pk:
+                    skipped += 1
+                    continue
+
+                cur.execute(
+                    """
+                    insert into core.case_indication (
+                        case_version_pk,
+                        source_system,
+                        source_quarter,
+                        source_report_id,
+                        drug_seq,
+                        indi_pt,
+                        raw_indi
+                    )
+                    values (%s, %s, %s, %s, %s, %s, %s)
+                    on conflict (source_system, source_quarter, source_report_id, drug_seq, indi_pt) do update
+                    set
+                        case_version_pk = excluded.case_version_pk,
+                        raw_indi = excluded.raw_indi
+                    """,
+                    (
+                        case_version_pk,
+                        norm["source_system"],
+                        norm["source_quarter"],
+                        norm["source_report_id"],
+                        norm["drug_seq"],
+                        norm["indi_pt"],
+                        Jsonb(norm["raw_indi"]),
+                    ),
+                )
+                processed += 1
+
+        conn.commit()
+
+    typer.echo(f"Normalized INDI rows. processed={processed}, skipped={skipped}")
 
 
 @app.command()

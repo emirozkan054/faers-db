@@ -70,6 +70,26 @@ create table if not exists staging.outc_raw (
     unique (source_file_id, row_num)
 );
 
+create table if not exists staging.ther_raw (
+    staging_id bigserial primary key,
+    source_file_id bigint not null references etl.source_file(source_file_id),
+    row_num bigint not null,
+    raw_record jsonb not null,
+    row_hash text not null,
+    loaded_at timestamptz not null default now(),
+    unique (source_file_id, row_num)
+);
+
+create table if not exists staging.indi_raw (
+    staging_id bigserial primary key,
+    source_file_id bigint not null references etl.source_file(source_file_id),
+    row_num bigint not null,
+    raw_record jsonb not null,
+    row_hash text not null,
+    loaded_at timestamptz not null default now(),
+    unique (source_file_id, row_num)
+);
+
 create table if not exists core.case_master (
     case_pk bigserial primary key,
     canonical_case_id text not null unique,
@@ -155,6 +175,35 @@ create table if not exists core.case_outcome (
     unique (source_system, source_quarter, source_report_id, outcome)
 );
 
+create table if not exists core.case_therapy (
+    case_therapy_pk bigserial primary key,
+    case_version_pk bigint not null references core.case_version(case_version_pk),
+    source_system text not null,
+    source_quarter text not null,
+    source_report_id text not null,
+    drug_seq integer,
+    start_dt date,
+    end_dt date,
+    dur integer,
+    dur_cod text,
+    raw_ther jsonb not null,
+    created_at timestamptz not null default now(),
+    unique (source_system, source_quarter, source_report_id, drug_seq, start_dt, end_dt)
+);
+
+create table if not exists core.case_indication (
+    case_indication_pk bigserial primary key,
+    case_version_pk bigint not null references core.case_version(case_version_pk),
+    source_system text not null,
+    source_quarter text not null,
+    source_report_id text not null,
+    drug_seq integer,
+    indi_pt text not null,
+    raw_indi jsonb not null,
+    created_at timestamptz not null default now(),
+    unique (source_system, source_quarter, source_report_id, drug_seq, indi_pt)
+);
+
 create or replace view mart.case_latest as
 select
     cm.case_pk,
@@ -187,7 +236,8 @@ select
     cd.drugname,
     cd.prod_ai,
     cr.reaction_pt,
-    cr.outcome as reaction_outcome
+    cr.outcome as reaction_outcome,
+    ci.indi_pt as indication_pt
 from core.case_version cv
 join core.case_master cm
   on cm.case_pk = cv.case_pk
@@ -195,4 +245,6 @@ left join core.case_drug cd
   on cd.case_version_pk = cv.case_version_pk
 left join core.case_reaction cr
   on cr.case_version_pk = cv.case_version_pk
+left join core.case_indication ci
+  on ci.case_version_pk = cv.case_version_pk
 where cv.is_latest_known = true;
