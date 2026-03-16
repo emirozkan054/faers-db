@@ -40,6 +40,26 @@ create table if not exists staging.demo_raw (
     unique (source_file_id, row_num)
 );
 
+create table if not exists staging.drug_raw (
+    staging_id bigserial primary key,
+    source_file_id bigint not null references etl.source_file(source_file_id),
+    row_num bigint not null,
+    raw_record jsonb not null,
+    row_hash text not null,
+    loaded_at timestamptz not null default now(),
+    unique (source_file_id, row_num)
+);
+
+create table if not exists staging.reac_raw (
+    staging_id bigserial primary key,
+    source_file_id bigint not null references etl.source_file(source_file_id),
+    row_num bigint not null,
+    raw_record jsonb not null,
+    row_hash text not null,
+    loaded_at timestamptz not null default now(),
+    unique (source_file_id, row_num)
+);
+
 create table if not exists core.case_master (
     case_pk bigserial primary key,
     canonical_case_id text not null unique,
@@ -77,4 +97,37 @@ create table if not exists core.case_version (
     is_deleted boolean not null default false,
     created_at timestamptz not null default now(),
     unique (source_system, source_report_id, source_quarter)
+);
+
+create table if not exists core.case_drug (
+    case_drug_pk bigserial primary key,
+    case_version_pk bigint not null references core.case_version(case_version_pk),
+    source_system text not null,
+    source_quarter text not null,
+    source_report_id text not null,
+    role_cod text,
+    drugname text,
+    prod_ai text,
+    route text,
+    dose_vbm text,
+    dose_amt numeric,
+    dose_unit text,
+    start_dt date,
+    end_dt date,
+    raw_drug jsonb not null,
+    created_at timestamptz not null default now(),
+    unique (source_system, source_quarter, source_report_id, drugname, prod_ai, dose_vbm)
+);
+
+create table if not exists core.case_reaction (
+    case_reaction_pk bigserial primary key,
+    case_version_pk bigint not null references core.case_version(case_version_pk),
+    source_system text not null,
+    source_quarter text not null,
+    source_report_id text not null,
+    reaction_pt text not null,
+    outcome text,
+    raw_reac jsonb not null,
+    created_at timestamptz not null default now(),
+    unique (source_system, source_quarter, source_report_id, reaction_pt)
 );
