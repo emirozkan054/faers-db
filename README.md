@@ -27,15 +27,6 @@ A lightweight ETL + normalization pipeline for FDA FAERS/AERS quarterly ASCII fi
   - `mart.case_drug_reaction` (includes indication and reporter-source terms when available)
 - Latest-known version flagging (`is_latest_known`) per case.
 
-## Why your sample outputs looked correct
-
-For your three loaded quarters (2004q1, 2012q4, 2014q3), the behavior is consistent with current code:
-
-- `staging.demo_raw` count by quarter should match line-level raw ingest.
-- `core.case_version` should be near that count, but may be slightly lower when a raw DEMO row is missing required ids (`source_case_id` or `source_report_id`) because those rows are skipped during normalization.
-- AERS rows often have null `CASEVERSION` while FAERS has more explicit follow-up/version semantics, so blank `case_version_num` in 2004 is expected.
-- Canonical IDs like `AERS:<case_id>` are expected because canonicalization is source-system-prefixed.
-
 ## Important FAERS context for product design
 
 When you build doctor-facing query features, preserve these guardrails:
