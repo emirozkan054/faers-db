@@ -11,12 +11,29 @@ from faersdb.staging_load import (
     insert_demo_raw_rows,
     insert_drug_raw_rows,
     insert_reac_raw_rows,
+    insert_outc_raw_rows,
 )
 from faersdb.normalize.demo import normalize_demo
 from faersdb.normalize.drug import normalize_drug
 from faersdb.normalize.reac import normalize_reac
+from faersdb.normalize.outc import normalize_outc
 
 app = typer.Typer()
+
+
+def fetch_case_version_pk(cur, source_system: str, source_quarter: str, source_report_id: str):
+    cur.execute(
+        """
+        select case_version_pk
+        from core.case_version
+        where source_system = %s
+          and source_quarter = %s
+          and source_report_id = %s
+        """,
+        (source_system, source_quarter, source_report_id),
+    )
+    row = cur.fetchone()
+    return row[0] if row else None
 
 
 @app.command()
@@ -122,12 +139,13 @@ def load_manifest():
 def load_staging(kind: str = "DEMO", quarter: str | None = None):
     kind = kind.upper()
     loaders = {
-        "DEMO": ("staging.demo_raw", insert_demo_raw_rows),
-        "DRUG": ("staging.drug_raw", insert_drug_raw_rows),
-        "REAC": ("staging.reac_raw", insert_reac_raw_rows),
+        "DEMO": insert_demo_raw_rows,
+        "DRUG": insert_drug_raw_rows,
+        "REAC": insert_reac_raw_rows,
+        "OUTC": insert_outc_raw_rows,
     }
     if kind not in loaders:
-        raise typer.BadParameter("Supported kinds: DEMO, DRUG, REAC")
+        raise typer.BadParameter("Supported kinds: DEMO, DRUG, REAC, OUTC")
 
     sql = """
         select source_file_id, source_quarter, file_path
@@ -146,7 +164,7 @@ def load_staging(kind: str = "DEMO", quarter: str | None = None):
     total_rows = 0
     file_count = 0
 
-    _, loader = loaders[kind]
+    loader = loaders[kind]
 
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -191,32 +209,22 @@ def normalize_reac_cmd(quarter: str | None = None):
 
         with conn.cursor() as cur:
             for raw_record, source_quarter, source_system in rows:
-                meta = {
+                norm = normalize_reac(raw_record, {
                     "source_quarter": source_quarter,
                     "source_system": source_system,
-                }
-                norm = normalize_reac(raw_record, meta)
+                })
 
                 if not norm["source_report_id"] or not norm["reaction_pt"]:
                     skipped += 1
                     continue
 
-                cur.execute(
-                    """
-                    select case_version_pk
-                    from core.case_version
-                    where source_system = %s
-                      and source_quarter = %s
-                      and source_report_id = %s
-                    """,
-                    (
-                        norm["source_system"],
-                        norm["source_quarter"],
-                        norm["source_report_id"],
-                    ),
+                case_version_pk = fetch_case_version_pk(
+                    cur,
+                    norm["source_system"],
+                    norm["source_quarter"],
+                    norm["source_report_id"],
                 )
-                case_version_row = cur.fetchone()
-                if not case_version_row:
+                if not case_version_pk:
                     skipped += 1
                     continue
 
@@ -239,7 +247,7 @@ def normalize_reac_cmd(quarter: str | None = None):
                         raw_reac = excluded.raw_reac
                     """,
                     (
-                        case_version_row[0],
+                        case_version_pk,
                         norm["source_system"],
                         norm["source_quarter"],
                         norm["source_report_id"],
@@ -284,32 +292,22 @@ def normalize_drug_cmd(quarter: str | None = None):
 
         with conn.cursor() as cur:
             for raw_record, source_quarter, source_system in rows:
-                meta = {
+                norm = normalize_drug(raw_record, {
                     "source_quarter": source_quarter,
                     "source_system": source_system,
-                }
-                norm = normalize_drug(raw_record, meta)
+                })
 
                 if not norm["source_report_id"] or not norm["drugname"]:
                     skipped += 1
                     continue
 
-                cur.execute(
-                    """
-                    select case_version_pk
-                    from core.case_version
-                    where source_system = %s
-                      and source_quarter = %s
-                      and source_report_id = %s
-                    """,
-                    (
-                        norm["source_system"],
-                        norm["source_quarter"],
-                        norm["source_report_id"],
-                    ),
+                case_version_pk = fetch_case_version_pk(
+                    cur,
+                    norm["source_system"],
+                    norm["source_quarter"],
+                    norm["source_report_id"],
                 )
-                case_version_row = cur.fetchone()
-                if not case_version_row:
+                if not case_version_pk:
                     skipped += 1
                     continue
 
@@ -344,7 +342,7 @@ def normalize_drug_cmd(quarter: str | None = None):
                         raw_drug = excluded.raw_drug
                     """,
                     (
-                        case_version_row[0],
+                        case_version_pk,
                         norm["source_system"],
                         norm["source_quarter"],
                         norm["source_report_id"],
@@ -365,6 +363,86 @@ def normalize_drug_cmd(quarter: str | None = None):
         conn.commit()
 
     typer.echo(f"Normalized DRUG rows. processed={processed}, skipped={skipped}")
+
+
+@app.command()
+def normalize_outc_cmd(quarter: str | None = None):
+    select_sql = """
+        select
+            s.raw_record,
+            f.source_quarter,
+            f.source_system
+        from staging.outc_raw s
+        join etl.source_file f
+          on f.source_file_id = s.source_file_id
+    """
+    params = []
+
+    if quarter:
+        select_sql += " where f.source_quarter = %s"
+        params.append(quarter.lower())
+
+    select_sql += " order by f.source_quarter, s.row_num"
+
+    processed = 0
+    skipped = 0
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(select_sql, params)
+            rows = cur.fetchall()
+
+        with conn.cursor() as cur:
+            for raw_record, source_quarter, source_system in rows:
+                norm = normalize_outc(raw_record, {
+                    "source_quarter": source_quarter,
+                    "source_system": source_system,
+                })
+
+                if not norm["source_report_id"] or not norm["outcome"]:
+                    skipped += 1
+                    continue
+
+                case_version_pk = fetch_case_version_pk(
+                    cur,
+                    norm["source_system"],
+                    norm["source_quarter"],
+                    norm["source_report_id"],
+                )
+                if not case_version_pk:
+                    skipped += 1
+                    continue
+
+                cur.execute(
+                    """
+                    insert into core.case_outcome (
+                        case_version_pk,
+                        source_system,
+                        source_quarter,
+                        source_report_id,
+                        outcome,
+                        raw_outc
+                    )
+                    values (%s, %s, %s, %s, %s, %s)
+                    on conflict (source_system, source_quarter, source_report_id, outcome) do update
+                    set
+                        case_version_pk = excluded.case_version_pk,
+                        raw_outc = excluded.raw_outc
+                    """,
+                    (
+                        case_version_pk,
+                        norm["source_system"],
+                        norm["source_quarter"],
+                        norm["source_report_id"],
+                        norm["outcome"],
+                        Jsonb(norm["raw_outc"]),
+                    ),
+                )
+                processed += 1
+
+        conn.commit()
+
+    typer.echo(f"Normalized OUTC rows. processed={processed}, skipped={skipped}")
 
 
 @app.command()

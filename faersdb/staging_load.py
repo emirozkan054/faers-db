@@ -106,3 +106,7 @@ def insert_drug_raw_rows(conn, source_file_id: int, file_path: Path) -> int:
 
 def insert_reac_raw_rows(conn, source_file_id: int, file_path: Path) -> int:
     return insert_raw_rows(conn, source_file_id, file_path, "staging.reac_raw")
+
+
+def insert_outc_raw_rows(conn, source_file_id: int, file_path: Path) -> int:
+    return insert_raw_rows(conn, source_file_id, file_path, "staging.outc_raw")
