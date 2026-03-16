@@ -118,3 +118,7 @@ def insert_ther_raw_rows(conn, source_file_id: int, file_path: Path) -> int:
 
 def insert_indi_raw_rows(conn, source_file_id: int, file_path: Path) -> int:
     return insert_raw_rows(conn, source_file_id, file_path, "staging.indi_raw")
+
+
+def insert_rpsr_raw_rows(conn, source_file_id: int, file_path: Path) -> int:
+    return insert_raw_rows(conn, source_file_id, file_path, "staging.rpsr_raw")

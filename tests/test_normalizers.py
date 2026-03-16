@@ -3,6 +3,7 @@ from faersdb.normalize.reac import normalize_reac
 from faersdb.normalize.outc import normalize_outc
 from faersdb.normalize.ther import normalize_ther
 from faersdb.normalize.indi import normalize_indi
+from faersdb.normalize.rpsr import normalize_rpsr
 
 
 def test_normalize_drug_prefers_primaryid_and_maps_fields():
@@ -55,3 +56,13 @@ def test_normalize_indi_maps_preferred_term_and_fallback():
     raw2 = {"ISR": "802", "INDICATION": "MIGRAINE"}
     out2 = normalize_indi(raw2, {"source_quarter": "2023q4", "source_system": "FAERS"})
     assert out2["indi_pt"] == "MIGRAINE"
+
+
+def test_normalize_rpsr_prefers_rpsr_cod_and_fallback():
+    raw1 = {"ISR": "900", "RPSR_COD": "HP"}
+    out1 = normalize_rpsr(raw1, {"source_quarter": "2024q1", "source_system": "FAERS"})
+    assert out1["reporter_type"] == "HP"
+
+    raw2 = {"ISR": "901", "REPORTER_TYPE": "CONSUMER"}
+    out2 = normalize_rpsr(raw2, {"source_quarter": "2024q1", "source_system": "FAERS"})
+    assert out2["reporter_type"] == "CONSUMER"

@@ -14,6 +14,7 @@ from faersdb.staging_load import (
     insert_outc_raw_rows,
     insert_ther_raw_rows,
     insert_indi_raw_rows,
+    insert_rpsr_raw_rows,
 )
 from faersdb.normalize.demo import normalize_demo
 from faersdb.normalize.drug import normalize_drug
@@ -21,6 +22,7 @@ from faersdb.normalize.reac import normalize_reac
 from faersdb.normalize.outc import normalize_outc
 from faersdb.normalize.ther import normalize_ther
 from faersdb.normalize.indi import normalize_indi
+from faersdb.normalize.rpsr import normalize_rpsr
 
 app = typer.Typer()
 
@@ -149,9 +151,10 @@ def load_staging(kind: str = "DEMO", quarter: str | None = None):
         "OUTC": insert_outc_raw_rows,
         "THER": insert_ther_raw_rows,
         "INDI": insert_indi_raw_rows,
+        "RPSR": insert_rpsr_raw_rows,
     }
     if kind not in loaders:
-        raise typer.BadParameter("Supported kinds: DEMO, DRUG, REAC, OUTC, THER, INDI")
+        raise typer.BadParameter("Supported kinds: DEMO, DRUG, REAC, OUTC, THER, INDI, RPSR")
 
     sql = """
         select source_file_id, source_quarter, file_path
@@ -621,6 +624,86 @@ def normalize_indi_cmd(quarter: str | None = None):
         conn.commit()
 
     typer.echo(f"Normalized INDI rows. processed={processed}, skipped={skipped}")
+
+
+@app.command()
+def normalize_rpsr_cmd(quarter: str | None = None):
+    select_sql = """
+        select
+            s.raw_record,
+            f.source_quarter,
+            f.source_system
+        from staging.rpsr_raw s
+        join etl.source_file f
+          on f.source_file_id = s.source_file_id
+    """
+    params = []
+
+    if quarter:
+        select_sql += " where f.source_quarter = %s"
+        params.append(quarter.lower())
+
+    select_sql += " order by f.source_quarter, s.row_num"
+
+    processed = 0
+    skipped = 0
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(select_sql, params)
+            rows = cur.fetchall()
+
+        with conn.cursor() as cur:
+            for raw_record, source_quarter, source_system in rows:
+                norm = normalize_rpsr(raw_record, {
+                    "source_quarter": source_quarter,
+                    "source_system": source_system,
+                })
+
+                if not norm["source_report_id"] or not norm["reporter_type"]:
+                    skipped += 1
+                    continue
+
+                case_version_pk = fetch_case_version_pk(
+                    cur,
+                    norm["source_system"],
+                    norm["source_quarter"],
+                    norm["source_report_id"],
+                )
+                if not case_version_pk:
+                    skipped += 1
+                    continue
+
+                cur.execute(
+                    """
+                    insert into core.case_report_source (
+                        case_version_pk,
+                        source_system,
+                        source_quarter,
+                        source_report_id,
+                        reporter_type,
+                        raw_rpsr
+                    )
+                    values (%s, %s, %s, %s, %s, %s)
+                    on conflict (source_system, source_quarter, source_report_id, reporter_type) do update
+                    set
+                        case_version_pk = excluded.case_version_pk,
+                        raw_rpsr = excluded.raw_rpsr
+                    """,
+                    (
+                        case_version_pk,
+                        norm["source_system"],
+                        norm["source_quarter"],
+                        norm["source_report_id"],
+                        norm["reporter_type"],
+                        Jsonb(norm["raw_rpsr"]),
+                    ),
+                )
+                processed += 1
+
+        conn.commit()
+
+    typer.echo(f"Normalized RPSR rows. processed={processed}, skipped={skipped}")
 
 
 @app.command()

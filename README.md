@@ -13,6 +13,7 @@ A lightweight ETL + normalization pipeline for FDA FAERS/AERS quarterly ASCII fi
   - `OUTC` -> `staging.outc_raw`
   - `THER` -> `staging.ther_raw`
   - `INDI` -> `staging.indi_raw`
+  - `RPSR` -> `staging.rpsr_raw`
 - Normalization:
   - DEMO -> `core.case_master` and `core.case_version`
   - DRUG -> `core.case_drug`
@@ -20,9 +21,10 @@ A lightweight ETL + normalization pipeline for FDA FAERS/AERS quarterly ASCII fi
   - OUTC -> `core.case_outcome`
   - THER -> `core.case_therapy`
   - INDI -> `core.case_indication`
+  - RPSR -> `core.case_report_source`
 - Clinician query starter marts:
   - `mart.case_latest`
-  - `mart.case_drug_reaction` (now includes indication terms when available)
+  - `mart.case_drug_reaction` (includes indication and reporter-source terms when available)
 - Latest-known version flagging (`is_latest_known`) per case.
 
 ## Why your sample outputs looked correct
@@ -46,7 +48,7 @@ When you build doctor-facing query features, preserve these guardrails:
 ## Suggested next implementation steps
 
 1. Expand ETL to remaining tables
-   - Normalize `RPSR` into a core table keyed by `case_version_pk`.
+   - Current core table coverage is DEMO/DRUG/REAC/OUTC/THER/INDI/RPSR; next can be deeper field harmonization and dedup policies.
 2. Build query-first marts for clinicians
    - Example marts: `mart.case_latest`, `mart.case_drug_reaction`, `mart.disproportionality_ready`.
 3. Add clinical-safe defaults
@@ -109,4 +111,7 @@ uv run python -m faersdb.cli normalize-ther-cmd
 
 uv run python -m faersdb.cli load-staging --kind INDI
 uv run python -m faersdb.cli normalize-indi-cmd
+
+uv run python -m faersdb.cli load-staging --kind RPSR
+uv run python -m faersdb.cli normalize-rpsr-cmd
 ```
