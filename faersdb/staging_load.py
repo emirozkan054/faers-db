@@ -58,12 +58,12 @@ def iter_delimited_records(file_path: Path, delimiter: str = "$"):
             yield row_num, record
 
 
-def insert_demo_raw_rows(conn, source_file_id: int, file_path: Path) -> int:
+def insert_raw_rows(conn, source_file_id: int, file_path: Path, table_name: str) -> int:
     total = 0
     batch: list[tuple] = []
 
-    sql = """
-        insert into staging.demo_raw (
+    sql = f"""
+        insert into {table_name} (
             source_file_id,
             row_num,
             raw_record,
@@ -95,3 +95,26 @@ def insert_demo_raw_rows(conn, source_file_id: int, file_path: Path) -> int:
 
     conn.commit()
     return total
+
+def insert_demo_raw_rows(conn, source_file_id: int, file_path: Path) -> int:
+    return insert_raw_rows(conn, source_file_id, file_path, "staging.demo_raw")
+
+
+def insert_drug_raw_rows(conn, source_file_id: int, file_path: Path) -> int:
+    return insert_raw_rows(conn, source_file_id, file_path, "staging.drug_raw")
+
+
+def insert_reac_raw_rows(conn, source_file_id: int, file_path: Path) -> int:
+    return insert_raw_rows(conn, source_file_id, file_path, "staging.reac_raw")
+
+
+def insert_outc_raw_rows(conn, source_file_id: int, file_path: Path) -> int:
+    return insert_raw_rows(conn, source_file_id, file_path, "staging.outc_raw")
+
+
+def insert_ther_raw_rows(conn, source_file_id: int, file_path: Path) -> int:
+    return insert_raw_rows(conn, source_file_id, file_path, "staging.ther_raw")
+
+
+def insert_indi_raw_rows(conn, source_file_id: int, file_path: Path) -> int:
+    return insert_raw_rows(conn, source_file_id, file_path, "staging.indi_raw")
