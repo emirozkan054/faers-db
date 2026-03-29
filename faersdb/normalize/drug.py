@@ -1,4 +1,4 @@
-from faersdb.normalize.demo import norm_text, parse_date_yyyymmdd, to_decimal
+from faersdb.normalize.demo import norm_text, parse_date_yyyymmdd, to_decimal, to_int
 
 
 def normalize_drug(raw: dict, meta: dict) -> dict:
@@ -12,6 +12,7 @@ def normalize_drug(raw: dict, meta: dict) -> dict:
         "source_quarter": meta["source_quarter"],
         "source_system": meta["source_system"],
         "source_report_id": source_report_id,
+        "drug_seq": to_int(raw.get("DRUG_SEQ")),
         "role_cod": norm_text(raw.get("ROLE_COD")),
         "drugname": norm_text(raw.get("DRUGNAME")),
         "prod_ai": norm_text(raw.get("PROD_AI")),

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-TABLE_KINDS = ["DEMO", "DRUG", "REAC", "OUTC", "RPSR", "THER", "INDI"]
+TABLE_KINDS = ["DEMO", "DRUG", "REAC", "OUTC", "RPSR", "THER", "INDI", "DELETE"]
 
 
 def detect_table_kind(path: Path) -> str | None:

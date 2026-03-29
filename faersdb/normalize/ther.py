@@ -12,7 +12,7 @@ def normalize_ther(raw: dict, meta: dict) -> dict:
         "source_quarter": meta["source_quarter"],
         "source_system": meta["source_system"],
         "source_report_id": source_report_id,
-        "drug_seq": to_int(raw.get("DRUG_SEQ")),
+        "drug_seq": to_int(raw.get("DSG_DRUG_SEQ")) or to_int(raw.get("DRUG_SEQ")),
         "start_dt": parse_date_yyyymmdd(raw.get("START_DT")),
         "end_dt": parse_date_yyyymmdd(raw.get("END_DT")),
         "dur": to_int(raw.get("DUR")),

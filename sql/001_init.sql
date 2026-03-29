@@ -58,6 +58,9 @@ create table if not exists etl.source_file (
     unique (source_quarter, table_kind, file_path)
 );
 
+create index if not exists idx_source_file_kind_quarter
+    on etl.source_file (table_kind, source_quarter);
+
 create table if not exists staging.demo_raw (
     staging_id bigserial primary key,
     source_file_id bigint not null references etl.source_file(source_file_id),
@@ -67,6 +70,9 @@ create table if not exists staging.demo_raw (
     loaded_at timestamptz not null default now(),
     unique (source_file_id, row_num)
 );
+
+create index if not exists idx_demo_raw_source_file_id
+    on staging.demo_raw (source_file_id);
 
 create table if not exists staging.drug_raw (
     staging_id bigserial primary key,
@@ -78,6 +84,9 @@ create table if not exists staging.drug_raw (
     unique (source_file_id, row_num)
 );
 
+create index if not exists idx_drug_raw_source_file_id
+    on staging.drug_raw (source_file_id);
+
 create table if not exists staging.reac_raw (
     staging_id bigserial primary key,
     source_file_id bigint not null references etl.source_file(source_file_id),
@@ -87,6 +96,9 @@ create table if not exists staging.reac_raw (
     loaded_at timestamptz not null default now(),
     unique (source_file_id, row_num)
 );
+
+create index if not exists idx_reac_raw_source_file_id
+    on staging.reac_raw (source_file_id);
 
 create table if not exists staging.outc_raw (
     staging_id bigserial primary key,
@@ -98,6 +110,9 @@ create table if not exists staging.outc_raw (
     unique (source_file_id, row_num)
 );
 
+create index if not exists idx_outc_raw_source_file_id
+    on staging.outc_raw (source_file_id);
+
 create table if not exists staging.ther_raw (
     staging_id bigserial primary key,
     source_file_id bigint not null references etl.source_file(source_file_id),
@@ -107,6 +122,9 @@ create table if not exists staging.ther_raw (
     loaded_at timestamptz not null default now(),
     unique (source_file_id, row_num)
 );
+
+create index if not exists idx_ther_raw_source_file_id
+    on staging.ther_raw (source_file_id);
 
 create table if not exists staging.indi_raw (
     staging_id bigserial primary key,
@@ -118,6 +136,9 @@ create table if not exists staging.indi_raw (
     unique (source_file_id, row_num)
 );
 
+create index if not exists idx_indi_raw_source_file_id
+    on staging.indi_raw (source_file_id);
+
 create table if not exists staging.rpsr_raw (
     staging_id bigserial primary key,
     source_file_id bigint not null references etl.source_file(source_file_id),
@@ -127,6 +148,22 @@ create table if not exists staging.rpsr_raw (
     loaded_at timestamptz not null default now(),
     unique (source_file_id, row_num)
 );
+
+create index if not exists idx_rpsr_raw_source_file_id
+    on staging.rpsr_raw (source_file_id);
+
+create table if not exists staging.delete_raw (
+    staging_id bigserial primary key,
+    source_file_id bigint not null references etl.source_file(source_file_id),
+    row_num bigint not null,
+    source_report_id text not null,
+    row_hash text not null,
+    loaded_at timestamptz not null default now(),
+    unique (source_file_id, row_num)
+);
+
+create index if not exists idx_delete_raw_source_file_id
+    on staging.delete_raw (source_file_id);
 
 create table if not exists core.case_master (
     case_pk bigserial primary key,
@@ -173,6 +210,7 @@ create table if not exists core.case_drug (
     source_system text not null,
     source_quarter text not null,
     source_report_id text not null,
+    drug_seq integer,
     role_cod text,
     drugname text,
     prod_ai text,
@@ -182,9 +220,10 @@ create table if not exists core.case_drug (
     dose_unit text,
     start_dt date,
     end_dt date,
+    row_hash text not null,
     raw_drug jsonb not null,
     created_at timestamptz not null default now(),
-    unique (source_system, source_quarter, source_report_id, drugname, prod_ai, dose_vbm)
+    unique (source_system, source_quarter, source_report_id, row_hash)
 );
 
 create table if not exists core.case_reaction (
@@ -195,9 +234,10 @@ create table if not exists core.case_reaction (
     source_report_id text not null,
     reaction_pt text not null,
     outcome text,
+    row_hash text not null,
     raw_reac jsonb not null,
     created_at timestamptz not null default now(),
-    unique (source_system, source_quarter, source_report_id, reaction_pt)
+    unique (source_system, source_quarter, source_report_id, row_hash)
 );
 
 
@@ -208,9 +248,10 @@ create table if not exists core.case_outcome (
     source_quarter text not null,
     source_report_id text not null,
     outcome text not null,
+    row_hash text not null,
     raw_outc jsonb not null,
     created_at timestamptz not null default now(),
-    unique (source_system, source_quarter, source_report_id, outcome)
+    unique (source_system, source_quarter, source_report_id, row_hash)
 );
 
 create table if not exists core.case_therapy (
@@ -224,9 +265,10 @@ create table if not exists core.case_therapy (
     end_dt date,
     dur integer,
     dur_cod text,
+    row_hash text not null,
     raw_ther jsonb not null,
     created_at timestamptz not null default now(),
-    unique (source_system, source_quarter, source_report_id, drug_seq, start_dt, end_dt)
+    unique (source_system, source_quarter, source_report_id, row_hash)
 );
 
 create table if not exists core.case_indication (
@@ -237,9 +279,10 @@ create table if not exists core.case_indication (
     source_report_id text not null,
     drug_seq integer,
     indi_pt text not null,
+    row_hash text not null,
     raw_indi jsonb not null,
     created_at timestamptz not null default now(),
-    unique (source_system, source_quarter, source_report_id, drug_seq, indi_pt)
+    unique (source_system, source_quarter, source_report_id, row_hash)
 );
 
 create table if not exists core.case_report_source (
@@ -249,10 +292,38 @@ create table if not exists core.case_report_source (
     source_quarter text not null,
     source_report_id text not null,
     reporter_type text not null,
+    row_hash text not null,
     raw_rpsr jsonb not null,
     created_at timestamptz not null default now(),
-    unique (source_system, source_quarter, source_report_id, reporter_type)
+    unique (source_system, source_quarter, source_report_id, row_hash)
 );
+
+create index if not exists idx_staging_delete_raw_source_report_id
+    on staging.delete_raw (source_report_id);
+
+create index if not exists idx_case_version_case_pk
+    on core.case_version (case_pk);
+
+create index if not exists idx_case_version_source_report
+    on core.case_version (source_system, source_quarter, source_report_id);
+
+create index if not exists idx_case_drug_case_version_pk
+    on core.case_drug (case_version_pk);
+
+create index if not exists idx_case_reaction_case_version_pk
+    on core.case_reaction (case_version_pk);
+
+create index if not exists idx_case_outcome_case_version_pk
+    on core.case_outcome (case_version_pk);
+
+create index if not exists idx_case_therapy_case_version_pk
+    on core.case_therapy (case_version_pk);
+
+create index if not exists idx_case_indication_case_version_pk
+    on core.case_indication (case_version_pk);
+
+create index if not exists idx_case_report_source_case_version_pk
+    on core.case_report_source (case_version_pk);
 
 create or replace view mart.case_latest as
 select
@@ -273,7 +344,8 @@ select
 from core.case_master cm
 join core.case_version cv
   on cv.case_pk = cm.case_pk
-where cv.is_latest_known = true;
+where cv.is_latest_known = true
+  and cv.is_deleted = false;
 
 create or replace view mart.case_drug_reaction as
 select
@@ -282,13 +354,17 @@ select
     cv.source_system,
     cv.source_quarter,
     cv.source_report_id,
+    cd.drug_seq,
     cd.role_cod,
     cd.drugname,
     cd.prod_ai,
+    ct.start_dt as therapy_start_dt,
+    ct.end_dt as therapy_end_dt,
+    outcomes.outcomes,
+    report_sources.reporter_types,
     cr.reaction_pt,
     cr.outcome as reaction_outcome,
-    ci.indi_pt as indication_pt,
-    rs.reporter_type
+    ci.indi_pt as indication_pt
 from core.case_version cv
 join core.case_master cm
   on cm.case_pk = cv.case_pk
@@ -298,6 +374,19 @@ left join core.case_reaction cr
   on cr.case_version_pk = cv.case_version_pk
 left join core.case_indication ci
   on ci.case_version_pk = cv.case_version_pk
-left join core.case_report_source rs
-  on rs.case_version_pk = cv.case_version_pk
-where cv.is_latest_known = true;
+ and ci.drug_seq is not distinct from cd.drug_seq
+left join core.case_therapy ct
+  on ct.case_version_pk = cv.case_version_pk
+ and ct.drug_seq is not distinct from cd.drug_seq
+left join lateral (
+    select array_agg(distinct outcome order by outcome) as outcomes
+    from core.case_outcome co
+    where co.case_version_pk = cv.case_version_pk
+) outcomes on true
+left join lateral (
+    select array_agg(distinct reporter_type order by reporter_type) as reporter_types
+    from core.case_report_source rs
+    where rs.case_version_pk = cv.case_version_pk
+) report_sources on true
+where cv.is_latest_known = true
+  and cv.is_deleted = false;

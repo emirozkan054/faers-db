@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.18.4",
+    "fastapi>=0.135.2",
+    "httpx>=0.28.1",
     "orjson>=3.11.7",
     "polars>=1.39.0",
     "psycopg[binary]>=3.3.3",
@@ -15,6 +17,7 @@ dependencies = [
     "rich>=14.3.3",
     "sqlalchemy>=2.0.48",
     "typer>=0.24.1",
+    "uvicorn>=0.42.0",
 ]
 
 [dependency-groups]

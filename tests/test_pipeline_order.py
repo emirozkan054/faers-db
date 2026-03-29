@@ -15,7 +15,9 @@ def test_quarter_pipeline_steps_order_and_coverage():
     ]
 
     assert steps[7:] == [
+        ("load", "DELETE"),
         ("normalize", "DEMO"),
+        ("normalize", "DELETE"),
         ("normalize", "DRUG"),
         ("normalize", "REAC"),
         ("normalize", "OUTC"),

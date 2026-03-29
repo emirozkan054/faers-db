@@ -9,12 +9,14 @@ from faersdb.normalize.rpsr import normalize_rpsr
 def test_normalize_drug_prefers_primaryid_and_maps_fields():
     raw = {
         "PRIMARYID": "123",
+        "DRUG_SEQ": "2",
         "DRUGNAME": "aspirin",
         "DOSE_AMT": "10",
         "START_DT": "20240131",
     }
     out = normalize_drug(raw, {"source_quarter": "2024q1", "source_system": "FAERS"})
     assert out["source_report_id"] == "123"
+    assert out["drug_seq"] == 2
     assert out["drugname"] == "aspirin"
     assert str(out["dose_amt"]) == "10"
     assert out["start_dt"].isoformat() == "2024-01-31"
@@ -39,7 +41,14 @@ def test_normalize_outc_picks_outc_cod_then_outcome_fallback():
 
 
 def test_normalize_ther_maps_duration_and_dates():
-    raw = {"ISR": "800", "DRUG_SEQ": "2", "START_DT": "20231201", "END_DT": "20231220", "DUR": "19", "DUR_COD": "DY"}
+    raw = {
+        "ISR": "800",
+        "DSG_DRUG_SEQ": "2",
+        "START_DT": "20231201",
+        "END_DT": "20231220",
+        "DUR": "19",
+        "DUR_COD": "DY",
+    }
     out = normalize_ther(raw, {"source_quarter": "2023q4", "source_system": "FAERS"})
     assert out["source_report_id"] == "800"
     assert out["drug_seq"] == 2
@@ -49,8 +58,9 @@ def test_normalize_ther_maps_duration_and_dates():
 
 
 def test_normalize_indi_maps_preferred_term_and_fallback():
-    raw1 = {"ISR": "801", "DRUG_SEQ": "1", "INDI_PT": "HEADACHE"}
+    raw1 = {"ISR": "801", "INDI_DRUG_SEQ": "1", "INDI_PT": "HEADACHE"}
     out1 = normalize_indi(raw1, {"source_quarter": "2023q4", "source_system": "FAERS"})
+    assert out1["drug_seq"] == 1
     assert out1["indi_pt"] == "HEADACHE"
 
     raw2 = {"ISR": "802", "INDICATION": "MIGRAINE"}
