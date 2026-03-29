@@ -7,10 +7,58 @@ from faersdb.config import settings
 from faersdb.db import get_conn
 from faersdb.manifest import discover_quarters
 from faersdb.detect import discover_files
-from faersdb.staging_load import insert_demo_raw_rows
+from faersdb.staging_load import (
+    insert_demo_raw_rows,
+    insert_drug_raw_rows,
+    insert_reac_raw_rows,
+    insert_outc_raw_rows,
+    insert_ther_raw_rows,
+    insert_indi_raw_rows,
+    insert_rpsr_raw_rows,
+)
 from faersdb.normalize.demo import normalize_demo
+from faersdb.normalize.drug import normalize_drug
+from faersdb.normalize.reac import normalize_reac
+from faersdb.normalize.outc import normalize_outc
+from faersdb.normalize.ther import normalize_ther
+from faersdb.normalize.indi import normalize_indi
+from faersdb.normalize.rpsr import normalize_rpsr
 
 app = typer.Typer()
+
+
+def fetch_case_version_pk(cur, source_system: str, source_quarter: str, source_report_id: str):
+    cur.execute(
+        """
+        select case_version_pk
+        from core.case_version
+        where source_system = %s
+          and source_quarter = %s
+          and source_report_id = %s
+        """,
+        (source_system, source_quarter, source_report_id),
+    )
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+def quarter_pipeline_steps() -> list[tuple[str, str]]:
+    return [
+        ("load", "DEMO"),
+        ("load", "DRUG"),
+        ("load", "REAC"),
+        ("load", "OUTC"),
+        ("load", "THER"),
+        ("load", "INDI"),
+        ("load", "RPSR"),
+        ("normalize", "DEMO"),
+        ("normalize", "DRUG"),
+        ("normalize", "REAC"),
+        ("normalize", "OUTC"),
+        ("normalize", "THER"),
+        ("normalize", "INDI"),
+        ("normalize", "RPSR"),
+    ]
 
 
 @app.command()
@@ -115,8 +163,17 @@ def load_manifest():
 @app.command()
 def load_staging(kind: str = "DEMO", quarter: str | None = None):
     kind = kind.upper()
-    if kind != "DEMO":
-        raise typer.BadParameter("For now, only DEMO is implemented.")
+    loaders = {
+        "DEMO": insert_demo_raw_rows,
+        "DRUG": insert_drug_raw_rows,
+        "REAC": insert_reac_raw_rows,
+        "OUTC": insert_outc_raw_rows,
+        "THER": insert_ther_raw_rows,
+        "INDI": insert_indi_raw_rows,
+        "RPSR": insert_rpsr_raw_rows,
+    }
+    if kind not in loaders:
+        raise typer.BadParameter("Supported kinds: DEMO, DRUG, REAC, OUTC, THER, INDI, RPSR")
 
     sql = """
         select source_file_id, source_quarter, file_path
@@ -135,18 +192,813 @@ def load_staging(kind: str = "DEMO", quarter: str | None = None):
     total_rows = 0
     file_count = 0
 
+    loader = loaders[kind]
+
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, params)
             files = cur.fetchall()
 
         for source_file_id, source_quarter, file_path in files:
-            inserted = insert_demo_raw_rows(conn, source_file_id, Path(file_path))
-            typer.echo(f"{source_quarter} -> inserted {inserted} DEMO rows from {file_path}")
+            inserted = loader(conn, source_file_id, Path(file_path))
+            typer.echo(f"{source_quarter} -> inserted {inserted} {kind} rows from {file_path}")
             total_rows += inserted
             file_count += 1
 
     typer.echo(f"Done. files={file_count}, rows_inserted={total_rows}")
+    return {"files": file_count, "rows_inserted": total_rows}
+
+
+@app.command()
+def run_quarter(quarter: str, run_qa: bool = True):
+    quarter = quarter.lower()
+    typer.echo(f"Running pipeline for {quarter}")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                insert into etl.pipeline_run (quarter, status)
+                values (%s, 'running')
+                returning pipeline_run_id
+                """,
+                (quarter,),
+            )
+            pipeline_run_id = cur.fetchone()[0]
+        conn.commit()
+
+    step_order = 0
+    try:
+        for phase, kind in quarter_pipeline_steps():
+            step_order += 1
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        insert into etl.pipeline_step_run (pipeline_run_id, step_order, phase, kind, status)
+                        values (%s, %s, %s, %s, 'running')
+                        """,
+                        (pipeline_run_id, step_order, phase, kind),
+                    )
+                conn.commit()
+
+            if phase == "load":
+                typer.echo(f"[load] {kind} {quarter}")
+                result = load_staging(kind=kind, quarter=quarter)
+                files_count = result.get("files") if result else None
+                rows_inserted = result.get("rows_inserted") if result else None
+                processed = None
+                skipped = None
+            else:
+                typer.echo(f"[normalize] {kind} {quarter}")
+                if kind == "DEMO":
+                    result = normalize_demo_cmd(quarter=quarter)
+                elif kind == "DRUG":
+                    result = normalize_drug_cmd(quarter=quarter)
+                elif kind == "REAC":
+                    result = normalize_reac_cmd(quarter=quarter)
+                elif kind == "OUTC":
+                    result = normalize_outc_cmd(quarter=quarter)
+                elif kind == "THER":
+                    result = normalize_ther_cmd(quarter=quarter)
+                elif kind == "INDI":
+                    result = normalize_indi_cmd(quarter=quarter)
+                elif kind == "RPSR":
+                    result = normalize_rpsr_cmd(quarter=quarter)
+                else:
+                    result = None
+                files_count = None
+                rows_inserted = None
+                processed = result.get("processed") if result else None
+                skipped = result.get("skipped") if result else None
+
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        update etl.pipeline_step_run
+                        set status = 'finished',
+                            finished_at = now(),
+                            files_count = %s,
+                            rows_inserted = %s,
+                            processed = %s,
+                            skipped = %s
+                        where pipeline_run_id = %s
+                          and step_order = %s
+                        """,
+                        (
+                            files_count,
+                            rows_inserted,
+                            processed,
+                            skipped,
+                            pipeline_run_id,
+                            step_order,
+                        ),
+                    )
+                conn.commit()
+
+        if run_qa:
+            typer.echo(f"[qa] {quarter}")
+            qa_summary(quarter=quarter)
+
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    update etl.pipeline_run
+                    set status = 'finished', finished_at = now()
+                    where pipeline_run_id = %s
+                    """,
+                    (pipeline_run_id,),
+                )
+            conn.commit()
+
+        typer.echo(f"Pipeline run completed. pipeline_run_id={pipeline_run_id}")
+        return pipeline_run_id
+
+    except Exception as exc:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    update etl.pipeline_step_run
+                    set status = 'failed',
+                        finished_at = now(),
+                        error_text = %s
+                    where pipeline_run_id = %s
+                      and step_order = %s
+                    """,
+                    (str(exc), pipeline_run_id, step_order),
+                )
+                cur.execute(
+                    """
+                    update etl.pipeline_run
+                    set status = 'failed',
+                        finished_at = now(),
+                        notes = %s
+                    where pipeline_run_id = %s
+                    """,
+                    (str(exc), pipeline_run_id),
+                )
+            conn.commit()
+        raise
+
+
+@app.command()
+def normalize_reac_cmd(quarter: str | None = None):
+    select_sql = """
+        select
+            s.raw_record,
+            f.source_quarter,
+            f.source_system
+        from staging.reac_raw s
+        join etl.source_file f
+          on f.source_file_id = s.source_file_id
+    """
+    params = []
+
+    if quarter:
+        select_sql += " where f.source_quarter = %s"
+        params.append(quarter.lower())
+
+    select_sql += " order by f.source_quarter, s.row_num"
+
+    processed = 0
+    skipped = 0
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(select_sql, params)
+            rows = cur.fetchall()
+
+        with conn.cursor() as cur:
+            for raw_record, source_quarter, source_system in rows:
+                norm = normalize_reac(raw_record, {
+                    "source_quarter": source_quarter,
+                    "source_system": source_system,
+                })
+
+                if not norm["source_report_id"] or not norm["reaction_pt"]:
+                    skipped += 1
+                    continue
+
+                case_version_pk = fetch_case_version_pk(
+                    cur,
+                    norm["source_system"],
+                    norm["source_quarter"],
+                    norm["source_report_id"],
+                )
+                if not case_version_pk:
+                    skipped += 1
+                    continue
+
+                cur.execute(
+                    """
+                    insert into core.case_reaction (
+                        case_version_pk,
+                        source_system,
+                        source_quarter,
+                        source_report_id,
+                        reaction_pt,
+                        outcome,
+                        raw_reac
+                    )
+                    values (%s, %s, %s, %s, %s, %s, %s)
+                    on conflict (source_system, source_quarter, source_report_id, reaction_pt) do update
+                    set
+                        case_version_pk = excluded.case_version_pk,
+                        outcome = excluded.outcome,
+                        raw_reac = excluded.raw_reac
+                    """,
+                    (
+                        case_version_pk,
+                        norm["source_system"],
+                        norm["source_quarter"],
+                        norm["source_report_id"],
+                        norm["reaction_pt"],
+                        norm["outcome"],
+                        Jsonb(norm["raw_reac"]),
+                    ),
+                )
+                processed += 1
+
+        conn.commit()
+
+    typer.echo(f"Normalized REAC rows. processed={processed}, skipped={skipped}")
+    return {"processed": processed, "skipped": skipped}
+
+
+@app.command()
+def normalize_drug_cmd(quarter: str | None = None):
+    select_sql = """
+        select
+            s.raw_record,
+            f.source_quarter,
+            f.source_system
+        from staging.drug_raw s
+        join etl.source_file f
+          on f.source_file_id = s.source_file_id
+    """
+    params = []
+
+    if quarter:
+        select_sql += " where f.source_quarter = %s"
+        params.append(quarter.lower())
+
+    select_sql += " order by f.source_quarter, s.row_num"
+
+    processed = 0
+    skipped = 0
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(select_sql, params)
+            rows = cur.fetchall()
+
+        with conn.cursor() as cur:
+            for raw_record, source_quarter, source_system in rows:
+                norm = normalize_drug(raw_record, {
+                    "source_quarter": source_quarter,
+                    "source_system": source_system,
+                })
+
+                if not norm["source_report_id"] or not norm["drugname"]:
+                    skipped += 1
+                    continue
+
+                case_version_pk = fetch_case_version_pk(
+                    cur,
+                    norm["source_system"],
+                    norm["source_quarter"],
+                    norm["source_report_id"],
+                )
+                if not case_version_pk:
+                    skipped += 1
+                    continue
+
+                cur.execute(
+                    """
+                    insert into core.case_drug (
+                        case_version_pk,
+                        source_system,
+                        source_quarter,
+                        source_report_id,
+                        role_cod,
+                        drugname,
+                        prod_ai,
+                        route,
+                        dose_vbm,
+                        dose_amt,
+                        dose_unit,
+                        start_dt,
+                        end_dt,
+                        raw_drug
+                    )
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    on conflict (source_system, source_quarter, source_report_id, drugname, prod_ai, dose_vbm) do update
+                    set
+                        case_version_pk = excluded.case_version_pk,
+                        role_cod = excluded.role_cod,
+                        route = excluded.route,
+                        dose_amt = excluded.dose_amt,
+                        dose_unit = excluded.dose_unit,
+                        start_dt = excluded.start_dt,
+                        end_dt = excluded.end_dt,
+                        raw_drug = excluded.raw_drug
+                    """,
+                    (
+                        case_version_pk,
+                        norm["source_system"],
+                        norm["source_quarter"],
+                        norm["source_report_id"],
+                        norm["role_cod"],
+                        norm["drugname"],
+                        norm["prod_ai"],
+                        norm["route"],
+                        norm["dose_vbm"],
+                        norm["dose_amt"],
+                        norm["dose_unit"],
+                        norm["start_dt"],
+                        norm["end_dt"],
+                        Jsonb(norm["raw_drug"]),
+                    ),
+                )
+                processed += 1
+
+        conn.commit()
+
+    typer.echo(f"Normalized DRUG rows. processed={processed}, skipped={skipped}")
+    return {"processed": processed, "skipped": skipped}
+
+
+@app.command()
+def normalize_outc_cmd(quarter: str | None = None):
+    select_sql = """
+        select
+            s.raw_record,
+            f.source_quarter,
+            f.source_system
+        from staging.outc_raw s
+        join etl.source_file f
+          on f.source_file_id = s.source_file_id
+    """
+    params = []
+
+    if quarter:
+        select_sql += " where f.source_quarter = %s"
+        params.append(quarter.lower())
+
+    select_sql += " order by f.source_quarter, s.row_num"
+
+    processed = 0
+    skipped = 0
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(select_sql, params)
+            rows = cur.fetchall()
+
+        with conn.cursor() as cur:
+            for raw_record, source_quarter, source_system in rows:
+                norm = normalize_outc(raw_record, {
+                    "source_quarter": source_quarter,
+                    "source_system": source_system,
+                })
+
+                if not norm["source_report_id"] or not norm["outcome"]:
+                    skipped += 1
+                    continue
+
+                case_version_pk = fetch_case_version_pk(
+                    cur,
+                    norm["source_system"],
+                    norm["source_quarter"],
+                    norm["source_report_id"],
+                )
+                if not case_version_pk:
+                    skipped += 1
+                    continue
+
+                cur.execute(
+                    """
+                    insert into core.case_outcome (
+                        case_version_pk,
+                        source_system,
+                        source_quarter,
+                        source_report_id,
+                        outcome,
+                        raw_outc
+                    )
+                    values (%s, %s, %s, %s, %s, %s)
+                    on conflict (source_system, source_quarter, source_report_id, outcome) do update
+                    set
+                        case_version_pk = excluded.case_version_pk,
+                        raw_outc = excluded.raw_outc
+                    """,
+                    (
+                        case_version_pk,
+                        norm["source_system"],
+                        norm["source_quarter"],
+                        norm["source_report_id"],
+                        norm["outcome"],
+                        Jsonb(norm["raw_outc"]),
+                    ),
+                )
+                processed += 1
+
+        conn.commit()
+
+    typer.echo(f"Normalized OUTC rows. processed={processed}, skipped={skipped}")
+    return {"processed": processed, "skipped": skipped}
+
+
+@app.command()
+def normalize_ther_cmd(quarter: str | None = None):
+    select_sql = """
+        select
+            s.raw_record,
+            f.source_quarter,
+            f.source_system
+        from staging.ther_raw s
+        join etl.source_file f
+          on f.source_file_id = s.source_file_id
+    """
+    params = []
+
+    if quarter:
+        select_sql += " where f.source_quarter = %s"
+        params.append(quarter.lower())
+
+    select_sql += " order by f.source_quarter, s.row_num"
+
+    processed = 0
+    skipped = 0
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(select_sql, params)
+            rows = cur.fetchall()
+
+        with conn.cursor() as cur:
+            for raw_record, source_quarter, source_system in rows:
+                norm = normalize_ther(raw_record, {
+                    "source_quarter": source_quarter,
+                    "source_system": source_system,
+                })
+
+                if not norm["source_report_id"]:
+                    skipped += 1
+                    continue
+
+                case_version_pk = fetch_case_version_pk(
+                    cur,
+                    norm["source_system"],
+                    norm["source_quarter"],
+                    norm["source_report_id"],
+                )
+                if not case_version_pk:
+                    skipped += 1
+                    continue
+
+                cur.execute(
+                    """
+                    insert into core.case_therapy (
+                        case_version_pk,
+                        source_system,
+                        source_quarter,
+                        source_report_id,
+                        drug_seq,
+                        start_dt,
+                        end_dt,
+                        dur,
+                        dur_cod,
+                        raw_ther
+                    )
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    on conflict (source_system, source_quarter, source_report_id, drug_seq, start_dt, end_dt) do update
+                    set
+                        case_version_pk = excluded.case_version_pk,
+                        dur = excluded.dur,
+                        dur_cod = excluded.dur_cod,
+                        raw_ther = excluded.raw_ther
+                    """,
+                    (
+                        case_version_pk,
+                        norm["source_system"],
+                        norm["source_quarter"],
+                        norm["source_report_id"],
+                        norm["drug_seq"],
+                        norm["start_dt"],
+                        norm["end_dt"],
+                        norm["dur"],
+                        norm["dur_cod"],
+                        Jsonb(norm["raw_ther"]),
+                    ),
+                )
+                processed += 1
+
+        conn.commit()
+
+    typer.echo(f"Normalized THER rows. processed={processed}, skipped={skipped}")
+    return {"processed": processed, "skipped": skipped}
+
+
+@app.command()
+def normalize_indi_cmd(quarter: str | None = None):
+    select_sql = """
+        select
+            s.raw_record,
+            f.source_quarter,
+            f.source_system
+        from staging.indi_raw s
+        join etl.source_file f
+          on f.source_file_id = s.source_file_id
+    """
+    params = []
+
+    if quarter:
+        select_sql += " where f.source_quarter = %s"
+        params.append(quarter.lower())
+
+    select_sql += " order by f.source_quarter, s.row_num"
+
+    processed = 0
+    skipped = 0
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(select_sql, params)
+            rows = cur.fetchall()
+
+        with conn.cursor() as cur:
+            for raw_record, source_quarter, source_system in rows:
+                norm = normalize_indi(raw_record, {
+                    "source_quarter": source_quarter,
+                    "source_system": source_system,
+                })
+
+                if not norm["source_report_id"] or not norm["indi_pt"]:
+                    skipped += 1
+                    continue
+
+                case_version_pk = fetch_case_version_pk(
+                    cur,
+                    norm["source_system"],
+                    norm["source_quarter"],
+                    norm["source_report_id"],
+                )
+                if not case_version_pk:
+                    skipped += 1
+                    continue
+
+                cur.execute(
+                    """
+                    insert into core.case_indication (
+                        case_version_pk,
+                        source_system,
+                        source_quarter,
+                        source_report_id,
+                        drug_seq,
+                        indi_pt,
+                        raw_indi
+                    )
+                    values (%s, %s, %s, %s, %s, %s, %s)
+                    on conflict (source_system, source_quarter, source_report_id, drug_seq, indi_pt) do update
+                    set
+                        case_version_pk = excluded.case_version_pk,
+                        raw_indi = excluded.raw_indi
+                    """,
+                    (
+                        case_version_pk,
+                        norm["source_system"],
+                        norm["source_quarter"],
+                        norm["source_report_id"],
+                        norm["drug_seq"],
+                        norm["indi_pt"],
+                        Jsonb(norm["raw_indi"]),
+                    ),
+                )
+                processed += 1
+
+        conn.commit()
+
+    typer.echo(f"Normalized INDI rows. processed={processed}, skipped={skipped}")
+    return {"processed": processed, "skipped": skipped}
+
+
+@app.command()
+def normalize_rpsr_cmd(quarter: str | None = None):
+    select_sql = """
+        select
+            s.raw_record,
+            f.source_quarter,
+            f.source_system
+        from staging.rpsr_raw s
+        join etl.source_file f
+          on f.source_file_id = s.source_file_id
+    """
+    params = []
+
+    if quarter:
+        select_sql += " where f.source_quarter = %s"
+        params.append(quarter.lower())
+
+    select_sql += " order by f.source_quarter, s.row_num"
+
+    processed = 0
+    skipped = 0
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(select_sql, params)
+            rows = cur.fetchall()
+
+        with conn.cursor() as cur:
+            for raw_record, source_quarter, source_system in rows:
+                norm = normalize_rpsr(raw_record, {
+                    "source_quarter": source_quarter,
+                    "source_system": source_system,
+                })
+
+                if not norm["source_report_id"] or not norm["reporter_type"]:
+                    skipped += 1
+                    continue
+
+                case_version_pk = fetch_case_version_pk(
+                    cur,
+                    norm["source_system"],
+                    norm["source_quarter"],
+                    norm["source_report_id"],
+                )
+                if not case_version_pk:
+                    skipped += 1
+                    continue
+
+                cur.execute(
+                    """
+                    insert into core.case_report_source (
+                        case_version_pk,
+                        source_system,
+                        source_quarter,
+                        source_report_id,
+                        reporter_type,
+                        raw_rpsr
+                    )
+                    values (%s, %s, %s, %s, %s, %s)
+                    on conflict (source_system, source_quarter, source_report_id, reporter_type) do update
+                    set
+                        case_version_pk = excluded.case_version_pk,
+                        raw_rpsr = excluded.raw_rpsr
+                    """,
+                    (
+                        case_version_pk,
+                        norm["source_system"],
+                        norm["source_quarter"],
+                        norm["source_report_id"],
+                        norm["reporter_type"],
+                        Jsonb(norm["raw_rpsr"]),
+                    ),
+                )
+                processed += 1
+
+        conn.commit()
+
+    typer.echo(f"Normalized RPSR rows. processed={processed}, skipped={skipped}")
+    return {"processed": processed, "skipped": skipped}
+
+
+@app.command()
+def qa_summary(quarter: str | None = None):
+    quarter_filter = quarter.lower() if quarter else None
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Staging row counts
+            staging_sql = """
+                select table_kind, source_quarter, count(*)
+                from (
+                    select 'DEMO'::text as table_kind, f.source_quarter
+                    from staging.demo_raw s
+                    join etl.source_file f on f.source_file_id = s.source_file_id
+                    union all
+                    select 'DRUG', f.source_quarter
+                    from staging.drug_raw s
+                    join etl.source_file f on f.source_file_id = s.source_file_id
+                    union all
+                    select 'REAC', f.source_quarter
+                    from staging.reac_raw s
+                    join etl.source_file f on f.source_file_id = s.source_file_id
+                    union all
+                    select 'OUTC', f.source_quarter
+                    from staging.outc_raw s
+                    join etl.source_file f on f.source_file_id = s.source_file_id
+                    union all
+                    select 'THER', f.source_quarter
+                    from staging.ther_raw s
+                    join etl.source_file f on f.source_file_id = s.source_file_id
+                    union all
+                    select 'INDI', f.source_quarter
+                    from staging.indi_raw s
+                    join etl.source_file f on f.source_file_id = s.source_file_id
+                    union all
+                    select 'RPSR', f.source_quarter
+                    from staging.rpsr_raw s
+                    join etl.source_file f on f.source_file_id = s.source_file_id
+                ) x
+                where (%s is null or source_quarter = %s)
+                group by table_kind, source_quarter
+                order by source_quarter, table_kind
+            """
+            cur.execute(staging_sql, (quarter_filter, quarter_filter))
+            staging_rows = cur.fetchall()
+
+            core_sql = """
+                select kind, source_quarter, count(*)
+                from (
+                    select 'DEMO'::text as kind, source_quarter from core.case_version
+                    union all select 'DRUG', source_quarter from core.case_drug
+                    union all select 'REAC', source_quarter from core.case_reaction
+                    union all select 'OUTC', source_quarter from core.case_outcome
+                    union all select 'THER', source_quarter from core.case_therapy
+                    union all select 'INDI', source_quarter from core.case_indication
+                    union all select 'RPSR', source_quarter from core.case_report_source
+                ) x
+                where (%s is null or source_quarter = %s)
+                group by kind, source_quarter
+                order by source_quarter, kind
+            """
+            cur.execute(core_sql, (quarter_filter, quarter_filter))
+            core_rows = {(k, q): c for k, q, c in cur.fetchall()}
+
+            typer.echo("Staging vs Core counts:")
+            for kind, qtr, st_count in staging_rows:
+                core_count = core_rows.get((kind, qtr), 0)
+                gap = st_count - core_count
+                typer.echo(f"  {qtr} {kind}: staging={st_count} core={core_count} gap={gap}")
+
+            orphan_sql = """
+                select 'case_drug' t, count(*)
+                from core.case_drug d
+                left join core.case_version cv on cv.case_version_pk = d.case_version_pk
+                where cv.case_version_pk is null
+                union all
+                select 'case_reaction', count(*)
+                from core.case_reaction r
+                left join core.case_version cv on cv.case_version_pk = r.case_version_pk
+                where cv.case_version_pk is null
+                union all
+                select 'case_outcome', count(*)
+                from core.case_outcome o
+                left join core.case_version cv on cv.case_version_pk = o.case_version_pk
+                where cv.case_version_pk is null
+                union all
+                select 'case_therapy', count(*)
+                from core.case_therapy t
+                left join core.case_version cv on cv.case_version_pk = t.case_version_pk
+                where cv.case_version_pk is null
+                union all
+                select 'case_indication', count(*)
+                from core.case_indication i
+                left join core.case_version cv on cv.case_version_pk = i.case_version_pk
+                where cv.case_version_pk is null
+                union all
+                select 'case_report_source', count(*)
+                from core.case_report_source rs
+                left join core.case_version cv on cv.case_version_pk = rs.case_version_pk
+                where cv.case_version_pk is null
+                order by 1
+            """
+            cur.execute(orphan_sql)
+            typer.echo("Orphan link checks:")
+            for tname, cnt in cur.fetchall():
+                typer.echo(f"  {tname}: {cnt}")
+
+            collision_sql = """
+                with ther as (
+                  select
+                    count(*) as rows_total,
+                    count(distinct (
+                      f.source_system,
+                      f.source_quarter,
+                      coalesce(s.raw_record->>'PRIMARYID', s.raw_record->>'ISR', s.raw_record->>'REPORT_ID'),
+                      case when coalesce(s.raw_record->>'DRUG_SEQ','') ~ '^\\d+$' then (s.raw_record->>'DRUG_SEQ')::int end,
+                      case when coalesce(s.raw_record->>'START_DT','') ~ '^\\d{8}$' then to_date(s.raw_record->>'START_DT','YYYYMMDD') end,
+                      case when coalesce(s.raw_record->>'END_DT','') ~ '^\\d{8}$' then to_date(s.raw_record->>'END_DT','YYYYMMDD') end
+                    )) as upsert_keys
+                  from staging.ther_raw s
+                  join etl.source_file f on f.source_file_id = s.source_file_id
+                  where (%s is null or f.source_quarter = %s)
+                )
+                select rows_total, upsert_keys, rows_total - upsert_keys as estimated_collisions
+                from ther
+            """
+            cur.execute(collision_sql, (quarter_filter, quarter_filter))
+            row = cur.fetchone()
+            if row:
+                typer.echo(
+                    "THER key collision profile: "
+                    f"rows={row[0]} keys={row[1]} estimated_collisions={row[2]}"
+                )
 
 
 @app.command()
@@ -321,6 +1173,7 @@ def normalize_demo_cmd(quarter: str | None = None):
         conn.commit()
 
     typer.echo(f"Normalized DEMO rows. processed={processed}, skipped={skipped}")
+    return {"processed": processed, "skipped": skipped}
 
 
 if __name__ == "__main__":
