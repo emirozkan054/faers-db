@@ -121,3 +121,26 @@ uv run python -m faersdb.cli normalize-rpsr-cmd
 # consolidated QA summary (optional --quarter 2004q1)
 uv run python -m faersdb.cli qa-summary
 ```
+
+
+## Pipeline run tracking
+
+`run-quarter` now writes execution metadata to:
+
+- `etl.pipeline_run` (one row per run)
+- `etl.pipeline_step_run` (one row per step: load/normalize by kind)
+
+Quick inspection query:
+
+```sql
+select r.pipeline_run_id, r.quarter, r.status, r.started_at, r.finished_at
+from etl.pipeline_run r
+order by r.pipeline_run_id desc
+limit 5;
+
+select s.pipeline_run_id, s.step_order, s.phase, s.kind, s.status,
+       s.files_count, s.rows_inserted, s.processed, s.skipped
+from etl.pipeline_step_run s
+where s.pipeline_run_id = <pipeline_run_id>
+order by s.step_order;
+```

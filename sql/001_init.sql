@@ -12,6 +12,34 @@ create table if not exists etl.load_batch (
     notes text
 );
 
+
+
+create table if not exists etl.pipeline_run (
+    pipeline_run_id bigserial primary key,
+    quarter text not null,
+    status text not null default 'running',
+    started_at timestamptz not null default now(),
+    finished_at timestamptz,
+    notes text
+);
+
+create table if not exists etl.pipeline_step_run (
+    pipeline_step_run_id bigserial primary key,
+    pipeline_run_id bigint not null references etl.pipeline_run(pipeline_run_id),
+    step_order int not null,
+    phase text not null,
+    kind text not null,
+    status text not null default 'running',
+    started_at timestamptz not null default now(),
+    finished_at timestamptz,
+    files_count int,
+    rows_inserted bigint,
+    processed bigint,
+    skipped bigint,
+    error_text text,
+    unique (pipeline_run_id, step_order)
+);
+
 create table if not exists etl.source_file (
     source_file_id bigserial primary key,
     load_batch_id bigint not null references etl.load_batch(load_batch_id),
