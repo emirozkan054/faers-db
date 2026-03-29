@@ -42,6 +42,25 @@ def fetch_case_version_pk(cur, source_system: str, source_quarter: str, source_r
     return row[0] if row else None
 
 
+def quarter_pipeline_steps() -> list[tuple[str, str]]:
+    return [
+        ("load", "DEMO"),
+        ("load", "DRUG"),
+        ("load", "REAC"),
+        ("load", "OUTC"),
+        ("load", "THER"),
+        ("load", "INDI"),
+        ("load", "RPSR"),
+        ("normalize", "DEMO"),
+        ("normalize", "DRUG"),
+        ("normalize", "REAC"),
+        ("normalize", "OUTC"),
+        ("normalize", "THER"),
+        ("normalize", "INDI"),
+        ("normalize", "RPSR"),
+    ]
+
+
 @app.command()
 def scan():
     quarters = discover_quarters(Path(settings.data_root))
@@ -187,6 +206,38 @@ def load_staging(kind: str = "DEMO", quarter: str | None = None):
             file_count += 1
 
     typer.echo(f"Done. files={file_count}, rows_inserted={total_rows}")
+
+
+@app.command()
+def run_quarter(quarter: str, run_qa: bool = True):
+    quarter = quarter.lower()
+    typer.echo(f"Running pipeline for {quarter}")
+
+    for phase, kind in quarter_pipeline_steps():
+        if phase == "load":
+            typer.echo(f"[load] {kind} {quarter}")
+            load_staging(kind=kind, quarter=quarter)
+            continue
+
+        typer.echo(f"[normalize] {kind} {quarter}")
+        if kind == "DEMO":
+            normalize_demo_cmd(quarter=quarter)
+        elif kind == "DRUG":
+            normalize_drug_cmd(quarter=quarter)
+        elif kind == "REAC":
+            normalize_reac_cmd(quarter=quarter)
+        elif kind == "OUTC":
+            normalize_outc_cmd(quarter=quarter)
+        elif kind == "THER":
+            normalize_ther_cmd(quarter=quarter)
+        elif kind == "INDI":
+            normalize_indi_cmd(quarter=quarter)
+        elif kind == "RPSR":
+            normalize_rpsr_cmd(quarter=quarter)
+
+    if run_qa:
+        typer.echo(f"[qa] {quarter}")
+        qa_summary(quarter=quarter)
 
 
 @app.command()

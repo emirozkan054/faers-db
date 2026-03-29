@@ -94,6 +94,9 @@ order by f.source_quarter;
 ```bash
 uv run python -m faersdb.cli init-db
 uv run python -m faersdb.cli load-manifest
+
+# one-command pipeline for a quarter (load + normalize + qa)
+uv run python -m faersdb.cli run-quarter 2004q1
 uv run python -m faersdb.cli load-staging --kind DEMO
 uv run python -m faersdb.cli normalize-demo-cmd
 
