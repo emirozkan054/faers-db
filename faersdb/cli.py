@@ -707,6 +707,140 @@ def normalize_rpsr_cmd(quarter: str | None = None):
 
 
 @app.command()
+def qa_summary(quarter: str | None = None):
+    quarter_filter = quarter.lower() if quarter else None
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Staging row counts
+            staging_sql = """
+                select table_kind, source_quarter, count(*)
+                from (
+                    select 'DEMO'::text as table_kind, f.source_quarter
+                    from staging.demo_raw s
+                    join etl.source_file f on f.source_file_id = s.source_file_id
+                    union all
+                    select 'DRUG', f.source_quarter
+                    from staging.drug_raw s
+                    join etl.source_file f on f.source_file_id = s.source_file_id
+                    union all
+                    select 'REAC', f.source_quarter
+                    from staging.reac_raw s
+                    join etl.source_file f on f.source_file_id = s.source_file_id
+                    union all
+                    select 'OUTC', f.source_quarter
+                    from staging.outc_raw s
+                    join etl.source_file f on f.source_file_id = s.source_file_id
+                    union all
+                    select 'THER', f.source_quarter
+                    from staging.ther_raw s
+                    join etl.source_file f on f.source_file_id = s.source_file_id
+                    union all
+                    select 'INDI', f.source_quarter
+                    from staging.indi_raw s
+                    join etl.source_file f on f.source_file_id = s.source_file_id
+                    union all
+                    select 'RPSR', f.source_quarter
+                    from staging.rpsr_raw s
+                    join etl.source_file f on f.source_file_id = s.source_file_id
+                ) x
+                where (%s is null or source_quarter = %s)
+                group by table_kind, source_quarter
+                order by source_quarter, table_kind
+            """
+            cur.execute(staging_sql, (quarter_filter, quarter_filter))
+            staging_rows = cur.fetchall()
+
+            core_sql = """
+                select kind, source_quarter, count(*)
+                from (
+                    select 'DEMO'::text as kind, source_quarter from core.case_version
+                    union all select 'DRUG', source_quarter from core.case_drug
+                    union all select 'REAC', source_quarter from core.case_reaction
+                    union all select 'OUTC', source_quarter from core.case_outcome
+                    union all select 'THER', source_quarter from core.case_therapy
+                    union all select 'INDI', source_quarter from core.case_indication
+                    union all select 'RPSR', source_quarter from core.case_report_source
+                ) x
+                where (%s is null or source_quarter = %s)
+                group by kind, source_quarter
+                order by source_quarter, kind
+            """
+            cur.execute(core_sql, (quarter_filter, quarter_filter))
+            core_rows = {(k, q): c for k, q, c in cur.fetchall()}
+
+            typer.echo("Staging vs Core counts:")
+            for kind, qtr, st_count in staging_rows:
+                core_count = core_rows.get((kind, qtr), 0)
+                gap = st_count - core_count
+                typer.echo(f"  {qtr} {kind}: staging={st_count} core={core_count} gap={gap}")
+
+            orphan_sql = """
+                select 'case_drug' t, count(*)
+                from core.case_drug d
+                left join core.case_version cv on cv.case_version_pk = d.case_version_pk
+                where cv.case_version_pk is null
+                union all
+                select 'case_reaction', count(*)
+                from core.case_reaction r
+                left join core.case_version cv on cv.case_version_pk = r.case_version_pk
+                where cv.case_version_pk is null
+                union all
+                select 'case_outcome', count(*)
+                from core.case_outcome o
+                left join core.case_version cv on cv.case_version_pk = o.case_version_pk
+                where cv.case_version_pk is null
+                union all
+                select 'case_therapy', count(*)
+                from core.case_therapy t
+                left join core.case_version cv on cv.case_version_pk = t.case_version_pk
+                where cv.case_version_pk is null
+                union all
+                select 'case_indication', count(*)
+                from core.case_indication i
+                left join core.case_version cv on cv.case_version_pk = i.case_version_pk
+                where cv.case_version_pk is null
+                union all
+                select 'case_report_source', count(*)
+                from core.case_report_source rs
+                left join core.case_version cv on cv.case_version_pk = rs.case_version_pk
+                where cv.case_version_pk is null
+                order by 1
+            """
+            cur.execute(orphan_sql)
+            typer.echo("Orphan link checks:")
+            for tname, cnt in cur.fetchall():
+                typer.echo(f"  {tname}: {cnt}")
+
+            collision_sql = """
+                with ther as (
+                  select
+                    count(*) as rows_total,
+                    count(distinct (
+                      f.source_system,
+                      f.source_quarter,
+                      coalesce(s.raw_record->>'PRIMARYID', s.raw_record->>'ISR', s.raw_record->>'REPORT_ID'),
+                      case when coalesce(s.raw_record->>'DRUG_SEQ','') ~ '^\\d+$' then (s.raw_record->>'DRUG_SEQ')::int end,
+                      case when coalesce(s.raw_record->>'START_DT','') ~ '^\\d{8}$' then to_date(s.raw_record->>'START_DT','YYYYMMDD') end,
+                      case when coalesce(s.raw_record->>'END_DT','') ~ '^\\d{8}$' then to_date(s.raw_record->>'END_DT','YYYYMMDD') end
+                    )) as upsert_keys
+                  from staging.ther_raw s
+                  join etl.source_file f on f.source_file_id = s.source_file_id
+                  where (%s is null or f.source_quarter = %s)
+                )
+                select rows_total, upsert_keys, rows_total - upsert_keys as estimated_collisions
+                from ther
+            """
+            cur.execute(collision_sql, (quarter_filter, quarter_filter))
+            row = cur.fetchone()
+            if row:
+                typer.echo(
+                    "THER key collision profile: "
+                    f"rows={row[0]} keys={row[1]} estimated_collisions={row[2]}"
+                )
+
+
+@app.command()
 def normalize_demo_cmd(quarter: str | None = None):
     select_sql = """
         select
