@@ -128,10 +128,12 @@ def apply_fast_backfill_table_settings(cur):
         cur.execute(
             f"alter table {table_name} set (autovacuum_enabled = false, toast.autovacuum_enabled = false)"
         )
+        cur.execute(f"alter table {table_name} disable trigger all")
 
 
 def reset_backfill_table_settings(cur):
     for table_name in ALL_BACKFILL_TABLES:
+        cur.execute(f"alter table {table_name} enable trigger all")
         cur.execute(
             f"alter table {table_name} reset (autovacuum_enabled, toast.autovacuum_enabled)"
         )

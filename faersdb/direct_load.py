@@ -51,6 +51,7 @@ def load_quarter_demo(quarter_info: dict, files: list[tuple[str, Path]]) -> dict
     try:
         with conn.cursor() as cur:
             cur.execute("SET synchronous_commit = off")
+            cur.execute("SET work_mem = '256MB'")
         conn.commit()
         count = _load_demo(conn, meta, demo_files)
     finally:
@@ -84,6 +85,7 @@ def load_quarter_links(quarter_info: dict, files: list[tuple[str, Path]]) -> dic
     try:
         with conn.cursor() as cur:
             cur.execute("SET synchronous_commit = off")
+            cur.execute("SET work_mem = '256MB'")
         conn.commit()
 
         for kind, loader in [
@@ -160,6 +162,8 @@ def _load_demo(conn, meta: dict, file_paths: list[Path]) -> int:
                         n["reporter_country"], n["auth_num"], n["lit_ref"],
                     ))
                     total += 1
+
+        cur.execute("ANALYZE _tmp_demo")
 
         # Upsert case_master
         cur.execute("""
@@ -247,7 +251,8 @@ def _load_link_table(
                         copy.write_row(row)
                         total += 1
 
-        cur.execute(insert_select_sql.format(tmp=tmp_name))
+        cur.execute(f"ANALYZE {tmp_name}")
+        cur.execute(insert_select_sql.format(tmp=tmp_name, quarter=quarter))
         cur.execute(f"DROP TABLE {tmp_name}")
     conn.commit()
     typer.echo(f"  [{quarter}] {table_kind} {total} rows in {_fmt(time.perf_counter() - t0)}")
@@ -285,7 +290,7 @@ def _load_drug(conn, meta: dict, file_paths: list[Path]) -> int:
             FROM {tmp} t
             JOIN core.case_version cv
               ON cv.source_system = t.source_system
-             AND cv.source_quarter = t.source_quarter
+             AND cv.source_quarter = '{quarter}'
              AND cv.source_report_id = t.source_report_id
             ORDER BY t.source_system, t.source_quarter, t.source_report_id, t.row_hash
             ON CONFLICT (source_system, source_quarter, source_report_id, row_hash)
@@ -331,7 +336,7 @@ def _load_reac(conn, meta: dict, file_paths: list[Path]) -> int:
             FROM {tmp} t
             JOIN core.case_version cv
               ON cv.source_system = t.source_system
-             AND cv.source_quarter = t.source_quarter
+             AND cv.source_quarter = '{quarter}'
              AND cv.source_report_id = t.source_report_id
             ORDER BY t.source_system, t.source_quarter, t.source_report_id, t.row_hash
             ON CONFLICT (source_system, source_quarter, source_report_id, row_hash)
@@ -375,7 +380,7 @@ def _load_outc(conn, meta: dict, file_paths: list[Path]) -> int:
             FROM {tmp} t
             JOIN core.case_version cv
               ON cv.source_system = t.source_system
-             AND cv.source_quarter = t.source_quarter
+             AND cv.source_quarter = '{quarter}'
              AND cv.source_report_id = t.source_report_id
             ORDER BY t.source_system, t.source_quarter, t.source_report_id, t.row_hash
             ON CONFLICT (source_system, source_quarter, source_report_id, row_hash)
@@ -420,7 +425,7 @@ def _load_ther(conn, meta: dict, file_paths: list[Path]) -> int:
             FROM {tmp} t
             JOIN core.case_version cv
               ON cv.source_system = t.source_system
-             AND cv.source_quarter = t.source_quarter
+             AND cv.source_quarter = '{quarter}'
              AND cv.source_report_id = t.source_report_id
             ORDER BY t.source_system, t.source_quarter, t.source_report_id, t.row_hash
             ON CONFLICT (source_system, source_quarter, source_report_id, row_hash)
@@ -465,7 +470,7 @@ def _load_indi(conn, meta: dict, file_paths: list[Path]) -> int:
             FROM {tmp} t
             JOIN core.case_version cv
               ON cv.source_system = t.source_system
-             AND cv.source_quarter = t.source_quarter
+             AND cv.source_quarter = '{quarter}'
              AND cv.source_report_id = t.source_report_id
             ORDER BY t.source_system, t.source_quarter, t.source_report_id, t.row_hash
             ON CONFLICT (source_system, source_quarter, source_report_id, row_hash)
@@ -509,7 +514,7 @@ def _load_rpsr(conn, meta: dict, file_paths: list[Path]) -> int:
             FROM {tmp} t
             JOIN core.case_version cv
               ON cv.source_system = t.source_system
-             AND cv.source_quarter = t.source_quarter
+             AND cv.source_quarter = '{quarter}'
              AND cv.source_report_id = t.source_report_id
             ORDER BY t.source_system, t.source_quarter, t.source_report_id, t.row_hash
             ON CONFLICT (source_system, source_quarter, source_report_id, row_hash)
@@ -552,6 +557,8 @@ def _load_delete(conn, meta: dict, file_paths: list[Path]) -> int:
                 for _, report_id in iter_delete_records(fp):
                     copy.write_row((report_id,))
                     total += 1
+
+        cur.execute("ANALYZE _tmp_delete")
 
         # Mark matching case_versions as deleted (skip is_latest_known recompute)
         cur.execute("""
