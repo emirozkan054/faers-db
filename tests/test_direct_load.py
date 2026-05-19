@@ -9,6 +9,7 @@ from faersdb.direct_load import (
     first_present_expr,
     row_hash_expr,
 )
+from faersdb.cli import init_sql_statements
 
 
 def test_build_temp_columns_cleans_and_deduplicates_names():
@@ -72,3 +73,14 @@ def test_copy_ascii_file_to_temp_handles_ragged_rows_and_empty_values(tmp_path):
         ("1002", "20", None, "ORAL"),
         ("1003", "30", None, None),
     ]
+
+
+def test_fast_backfill_schema_can_defer_constraints():
+    statements = "\n".join(
+        init_sql_statements("fast_backfill", defer_constraints=True)
+    ).lower()
+
+    assert "create unlogged table if not exists core.case_version" in statements
+    assert "primary key" not in statements
+    assert " references " not in statements
+    assert " unique" not in statements

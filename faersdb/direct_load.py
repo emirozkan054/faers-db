@@ -354,6 +354,12 @@ def _load_all_demo(
         )
         cur.execute(
             """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_case_master_canonical_case_id_uq
+            ON core.case_master (canonical_case_id)
+            """
+        )
+        cur.execute(
+            """
             INSERT INTO core.case_version (
                 case_pk,
                 source_quarter,

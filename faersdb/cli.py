@@ -31,6 +31,9 @@ TABLE_STATEMENT_RE = re.compile(
     r"^create table if not exists ((?:etl|staging|core)\.[a-z_]+)\s*\(",
     re.IGNORECASE,
 )
+PRIMARY_KEY_RE = re.compile(r"\s+primary\s+key\b", re.IGNORECASE)
+INLINE_UNIQUE_RE = re.compile(r"\s+unique(?=\s*(?:,|$))", re.IGNORECASE)
+REFERENCES_RE = re.compile(r"\s+references\s+[a-z_]+\.[a-z_]+\([a-z_]+\)", re.IGNORECASE)
 ALL_BACKFILL_TABLES = (
     "etl.load_batch",
     "etl.pipeline_run",
@@ -94,7 +97,31 @@ def iter_sql_statements(sql_text: str) -> list[str]:
     return [statement.strip() for statement in sql_text.split(";") if statement.strip()]
 
 
-def init_sql_statements(profile: str | None = None) -> list[str]:
+def strip_table_constraints(statement: str) -> str:
+    lines: list[str] = []
+    for line in statement.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("unique "):
+            continue
+        line = PRIMARY_KEY_RE.sub("", line)
+        line = INLINE_UNIQUE_RE.sub("", line)
+        line = REFERENCES_RE.sub("", line)
+        lines.append(line)
+
+    for idx in range(len(lines) - 1, -1, -1):
+        if lines[idx].strip() == ")":
+            for prev_idx in range(idx - 1, -1, -1):
+                if lines[prev_idx].strip():
+                    lines[prev_idx] = re.sub(r",\s*$", "", lines[prev_idx])
+                    return "\n".join(lines)
+    return "\n".join(lines)
+
+
+def init_sql_statements(
+    profile: str | None = None,
+    *,
+    defer_constraints: bool = False,
+) -> list[str]:
     resolved_profile = resolve_pipeline_profile(profile)
     statements: list[str] = []
 
@@ -109,6 +136,8 @@ def init_sql_statements(profile: str | None = None) -> list[str]:
                 statement,
                 count=1,
             )
+            if defer_constraints:
+                statement = strip_table_constraints(statement)
 
         statements.append(statement)
 
@@ -120,6 +149,36 @@ def deferred_index_statements() -> list[str]:
         statement
         for statement in iter_sql_statements(INIT_SQL_PATH.read_text())
         if statement.lower().startswith("create index if not exists")
+    ]
+
+
+def deferred_unique_index_statements() -> list[str]:
+    return [
+        "create unique index if not exists idx_pipeline_step_run_batch_order_uq on etl.pipeline_step_run (pipeline_run_id, step_order)",
+        "create unique index if not exists idx_source_file_quarter_kind_path_uq on etl.source_file (source_quarter, table_kind, file_path)",
+        "create unique index if not exists idx_demo_raw_source_file_row_uq on staging.demo_raw (source_file_id, row_num)",
+        "create unique index if not exists idx_drug_raw_source_file_row_uq on staging.drug_raw (source_file_id, row_num)",
+        "create unique index if not exists idx_reac_raw_source_file_row_uq on staging.reac_raw (source_file_id, row_num)",
+        "create unique index if not exists idx_outc_raw_source_file_row_uq on staging.outc_raw (source_file_id, row_num)",
+        "create unique index if not exists idx_ther_raw_source_file_row_uq on staging.ther_raw (source_file_id, row_num)",
+        "create unique index if not exists idx_indi_raw_source_file_row_uq on staging.indi_raw (source_file_id, row_num)",
+        "create unique index if not exists idx_rpsr_raw_source_file_row_uq on staging.rpsr_raw (source_file_id, row_num)",
+        "create unique index if not exists idx_delete_raw_source_file_row_uq on staging.delete_raw (source_file_id, row_num)",
+        "create unique index if not exists idx_case_master_canonical_case_id_uq on core.case_master (canonical_case_id)",
+        "create unique index if not exists idx_case_version_source_report_uq on core.case_version (source_system, source_report_id, source_quarter)",
+        "create unique index if not exists idx_case_drug_source_row_uq on core.case_drug (source_system, source_quarter, source_report_id, row_hash)",
+        "create unique index if not exists idx_case_reaction_source_row_uq on core.case_reaction (source_system, source_quarter, source_report_id, row_hash)",
+        "create unique index if not exists idx_case_outcome_source_row_uq on core.case_outcome (source_system, source_quarter, source_report_id, row_hash)",
+        "create unique index if not exists idx_case_therapy_source_row_uq on core.case_therapy (source_system, source_quarter, source_report_id, row_hash)",
+        "create unique index if not exists idx_case_indication_source_row_uq on core.case_indication (source_system, source_quarter, source_report_id, row_hash)",
+        "create unique index if not exists idx_case_report_source_source_row_uq on core.case_report_source (source_system, source_quarter, source_report_id, row_hash)",
+    ]
+
+
+def backfill_support_index_statements() -> list[str]:
+    return [
+        "create index if not exists idx_case_version_source_report on core.case_version (source_system, source_quarter, source_report_id)",
+        "create index if not exists idx_case_version_case_pk on core.case_version (case_pk)",
     ]
 
 
@@ -474,12 +533,15 @@ def scan():
 
 
 @app.command()
-def init_db(profile: str | None = None):
+def init_db(profile: str | None = None, defer_constraints: bool = False):
     started_at = time.perf_counter()
     resolved_profile = resolve_pipeline_profile(profile)
     with get_conn() as conn:
         with conn.cursor() as cur:
-            for statement in init_sql_statements(resolved_profile):
+            for statement in init_sql_statements(
+                resolved_profile,
+                defer_constraints=defer_constraints,
+            ):
                 cur.execute(statement)
             if resolved_profile == "fast_backfill":
                 apply_fast_backfill_table_settings(cur)
@@ -514,9 +576,13 @@ def finalize_backfill(
             help="PostgreSQL maintenance_work_mem for deferred index builds.",
         ),
     ] = "512MB",
+    deferred_constraints: bool = False,
 ):
     started_at = time.perf_counter()
     index_statements = deferred_index_statements()
+    unique_index_statements = (
+        deferred_unique_index_statements() if deferred_constraints else []
+    )
     typer.echo("Finalizing backfill: restoring table settings")
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -524,8 +590,6 @@ def finalize_backfill(
             cur.execute("select set_config('maintenance_work_mem', %s, true)", (maintenance_work_mem,))
             cur.execute("set local max_parallel_maintenance_workers = 2")
             reset_backfill_table_settings(cur)
-            typer.echo("Finalizing backfill: checking referential integrity")
-            assert_backfill_referential_integrity(cur)
             if durable:
                 typer.echo("Finalizing backfill: converting tables back to logged mode")
                 set_tables_logged(cur)
@@ -534,12 +598,21 @@ def finalize_backfill(
                     "Finalizing backfill: keeping tables UNLOGGED for speed. "
                     "Use --durable later if you want crash recovery."
                 )
+            if unique_index_statements:
+                typer.echo(
+                    f"Finalizing backfill: building {len(unique_index_statements)} deferred unique indexes"
+                )
+                for idx, statement in enumerate(unique_index_statements, start=1):
+                    typer.echo(f"  unique index {idx}/{len(unique_index_statements)}")
+                    cur.execute(statement)
             typer.echo(f"Finalizing backfill: building {len(index_statements)} deferred indexes")
             for idx, statement in enumerate(index_statements, start=1):
                 typer.echo(f"  index {idx}/{len(index_statements)}")
                 cur.execute(statement)
             typer.echo("Finalizing backfill: running analyze")
             analyze_backfill_tables(cur)
+            typer.echo("Finalizing backfill: checking referential integrity")
+            assert_backfill_referential_integrity(cur)
         conn.commit()
 
     if run_qa:
@@ -2058,7 +2131,7 @@ def backfill_all(
             drop_backfill_schemas()
 
         typer.echo("[backfill] Initializing database with fast_backfill profile")
-        init_db(profile="fast_backfill")
+        init_db(profile="fast_backfill", defer_constraints=True)
         initialized = True
 
         # ---- Phase 2: discover quarters & files ----
@@ -2098,6 +2171,13 @@ def backfill_all(
             work_mem=work_mem,
             copy_chunk_mb=copy_chunk_mb,
         )
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("select set_config('maintenance_work_mem', %s, true)", (maintenance_work_mem,))
+                typer.echo("[backfill] Building load support indexes")
+                for statement in backfill_support_index_statements():
+                    cur.execute(statement)
+            conn.commit()
         typer.echo(
             f"[backfill] Phase A done in "
             f"{format_duration(time.perf_counter() - phase_a_start)}"
@@ -2179,6 +2259,7 @@ def backfill_all(
             durable=durable,
             run_qa=run_qa,
             maintenance_work_mem=maintenance_work_mem,
+            deferred_constraints=True,
         )
         finalized = True
 
