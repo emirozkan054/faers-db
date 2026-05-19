@@ -171,6 +171,7 @@ def _load_demo(conn, meta: dict, file_paths: list[Path]) -> int:
                 source_case_id, source_system,
                 source_quarter, source_quarter
             FROM _tmp_demo
+            ORDER BY 1
             ON CONFLICT (canonical_case_id) DO UPDATE SET
                 first_seen_quarter = LEAST(
                     core.case_master.first_seen_quarter, EXCLUDED.first_seen_quarter),
@@ -198,6 +199,7 @@ def _load_demo(conn, meta: dict, file_paths: list[Path]) -> int:
             FROM _tmp_demo d
             JOIN core.case_master cm
               ON cm.canonical_case_id = d.source_system || ':' || d.source_case_id
+            ORDER BY d.source_system, d.source_report_id, d.source_quarter
             ON CONFLICT (source_system, source_report_id, source_quarter)
             DO NOTHING
         """)
@@ -285,6 +287,7 @@ def _load_drug(conn, meta: dict, file_paths: list[Path]) -> int:
               ON cv.source_system = t.source_system
              AND cv.source_quarter = t.source_quarter
              AND cv.source_report_id = t.source_report_id
+            ORDER BY t.source_system, t.source_quarter, t.source_report_id, t.row_hash
             ON CONFLICT (source_system, source_quarter, source_report_id, row_hash)
             DO NOTHING
         """,
@@ -330,6 +333,7 @@ def _load_reac(conn, meta: dict, file_paths: list[Path]) -> int:
               ON cv.source_system = t.source_system
              AND cv.source_quarter = t.source_quarter
              AND cv.source_report_id = t.source_report_id
+            ORDER BY t.source_system, t.source_quarter, t.source_report_id, t.row_hash
             ON CONFLICT (source_system, source_quarter, source_report_id, row_hash)
             DO NOTHING
         """,
@@ -373,6 +377,7 @@ def _load_outc(conn, meta: dict, file_paths: list[Path]) -> int:
               ON cv.source_system = t.source_system
              AND cv.source_quarter = t.source_quarter
              AND cv.source_report_id = t.source_report_id
+            ORDER BY t.source_system, t.source_quarter, t.source_report_id, t.row_hash
             ON CONFLICT (source_system, source_quarter, source_report_id, row_hash)
             DO NOTHING
         """,
@@ -417,6 +422,7 @@ def _load_ther(conn, meta: dict, file_paths: list[Path]) -> int:
               ON cv.source_system = t.source_system
              AND cv.source_quarter = t.source_quarter
              AND cv.source_report_id = t.source_report_id
+            ORDER BY t.source_system, t.source_quarter, t.source_report_id, t.row_hash
             ON CONFLICT (source_system, source_quarter, source_report_id, row_hash)
             DO NOTHING
         """,
@@ -461,6 +467,7 @@ def _load_indi(conn, meta: dict, file_paths: list[Path]) -> int:
               ON cv.source_system = t.source_system
              AND cv.source_quarter = t.source_quarter
              AND cv.source_report_id = t.source_report_id
+            ORDER BY t.source_system, t.source_quarter, t.source_report_id, t.row_hash
             ON CONFLICT (source_system, source_quarter, source_report_id, row_hash)
             DO NOTHING
         """,
@@ -504,6 +511,7 @@ def _load_rpsr(conn, meta: dict, file_paths: list[Path]) -> int:
               ON cv.source_system = t.source_system
              AND cv.source_quarter = t.source_quarter
              AND cv.source_report_id = t.source_report_id
+            ORDER BY t.source_system, t.source_quarter, t.source_report_id, t.row_hash
             ON CONFLICT (source_system, source_quarter, source_report_id, row_hash)
             DO NOTHING
         """,

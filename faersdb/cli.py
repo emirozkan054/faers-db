@@ -1,4 +1,4 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 import os
 from pathlib import Path
 import re
@@ -1912,7 +1912,7 @@ def backfill_all(
     all_results: list[dict] = []
     errors: list[Exception] = []
 
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+    with ProcessPoolExecutor(max_workers=worker_count) as executor:
         futures = {
             executor.submit(load_quarter_links, q_info, q_files): q_info["source_quarter"]
             for q_info, q_files in quarter_work
