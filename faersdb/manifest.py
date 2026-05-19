@@ -28,4 +28,4 @@ def discover_quarters(root: Path) -> list[dict]:
             "source_quarter": f"{year}q{qtr}",
             "schema_era": detect_schema_era(system, year, qtr),
         })
-    return rows
+    return sorted(rows, key=lambda row: (row["source_year"], row["source_qtr"]))

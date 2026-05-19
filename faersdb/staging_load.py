@@ -4,7 +4,6 @@ import time
 from pathlib import Path
 
 import orjson
-import polars as pl
 from psycopg.types.json import Jsonb
 
 def clean_colname(name: str) -> str:
@@ -18,27 +17,31 @@ def clean_value(value: str | None) -> str | None:
     return s if s != "" else None
 
 def iter_delimited_records(file_path: Path, delimiter: str = "$"):
-    df = pl.read_csv(
-        file_path,
-        separator=delimiter,
-        ignore_errors=True,
-        infer_schema_length=0,
-        null_values=[""],
-        truncate_ragged_lines=True,
-        quote_char=None,
-    )
-    
-    if df.is_empty():
-        return
-        
-    df = df.rename({c: clean_colname(c) for c in df.columns})
-    df = df.with_columns(pl.all().str.strip_chars())
-    df = df.with_columns(
-        pl.when(pl.col(pl.Utf8) == "").then(None).otherwise(pl.col(pl.Utf8)).name.keep()
-    )
-    
-    for row_num, row in enumerate(df.iter_rows(named=True), start=1):
-        yield row_num, row
+    with open(file_path, "r", encoding="utf-8-sig", errors="replace", newline="") as f:
+        reader = csv.reader(f, delimiter=delimiter)
+
+        try:
+            raw_header = next(reader)
+        except StopIteration:
+            return
+
+        header = [clean_colname(col) for col in raw_header]
+
+        for row_num, row in enumerate(reader, start=1):
+            if not row or all((x.strip() == "" for x in row)):
+                continue
+
+            if len(row) == len(header) + 1 and row[-1] == "":
+                row = row[:-1]
+            if len(row) < len(header):
+                row = row + [""] * (len(header) - len(row))
+            elif len(row) > len(header):
+                row = row[: len(header)]
+
+            yield row_num, {
+                header[i]: clean_value(row[i])
+                for i in range(len(header))
+            }
 
 
 def iter_delete_records(file_path: Path):

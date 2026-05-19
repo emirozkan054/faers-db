@@ -32,7 +32,7 @@ Use the `backfill-all` command. This bypasses intermediate staging tables and lo
 ```bash
 # This single command initializes the DB, discovers files, loads all quarters, 
 # recomputes case flags, builds indexes, and runs ANALYZE.
-uv run python -m faersdb.cli backfill-all --max-workers 4
+uv run python -m faersdb.cli backfill-all --reset --max-workers 2
 ```
 *Note: By default, this leaves tables `UNLOGGED` for speed. If you want standard PostgreSQL durability (WAL logging) after the load finishes, run it with the `--durable` flag.*
 

@@ -1,5 +1,4 @@
 import polars as pl
-import csv
 from pathlib import Path
 from faersdb.staging_load import iter_delimited_records as old_iter
 

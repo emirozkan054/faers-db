@@ -30,7 +30,6 @@ def test_csv():
                 row = row + [""] * (len(header) - len(row))
             elif len(row) > len(header):
                 row = row[: len(header)]
-            record = {header[i]: clean_value(row[i]) for i in range(len(header))}
             count += 1
     t1 = time.time()
     print(f"CSV: {count} rows in {t1-t0:.2f}s")

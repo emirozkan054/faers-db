@@ -4,6 +4,7 @@ from uuid import uuid4
 import pytest
 from psycopg import connect, sql
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
+import typer
 
 from faersdb import cli
 from faersdb.config import settings
@@ -278,6 +279,34 @@ def test_pipeline_standard_and_fast_backfill_match(pipeline_env_factory):
             snapshots[profile] = snapshot
 
     assert snapshots["standard"] == snapshots["fast_backfill"]
+
+
+def test_standard_pipeline_and_backfill_all_match(pipeline_env_factory):
+    snapshots = {}
+
+    with pipeline_env_factory():
+        cli.init_db(profile="standard")
+        cli.load_manifest()
+        cli.run_quarter("2025q4", run_qa=False, parallel_normalize=False, profile="standard")
+        cli.run_quarter("2026q1", run_qa=False, parallel_normalize=False, profile="standard")
+        snapshots["standard"] = _database_snapshot()
+
+    with pipeline_env_factory():
+        cli.backfill_all(max_workers=1, reset=True, run_qa=False, copy_chunk_mb=1)
+        snapshots["backfill_all"] = _database_snapshot()
+
+    _assert_expected_snapshot(snapshots["standard"])
+    assert snapshots["standard"] == snapshots["backfill_all"]
+
+
+def test_backfill_all_refuses_non_empty_core_without_reset(pipeline_env_factory):
+    with pipeline_env_factory():
+        cli.init_db(profile="standard")
+        cli.load_manifest()
+        cli.run_quarter("2025q4", run_qa=False, parallel_normalize=False, profile="standard")
+
+        with pytest.raises(typer.Exit):
+            cli.backfill_all(max_workers=1, run_qa=False)
 
 
 def test_fast_backfill_finalize_keeps_unlogged_by_default(pipeline_env_factory):

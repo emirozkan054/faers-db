@@ -74,7 +74,7 @@ def default_parallel_workers(max_workers: int) -> int:
         return max_workers
 
     cpu_count = os.cpu_count() or 4
-    return max(2, min(4, cpu_count))
+    return max(1, min(2, cpu_count))
 
 
 def resolve_pipeline_profile(profile: str | None = None) -> str:
@@ -147,6 +147,137 @@ def set_tables_logged(cur):
 def analyze_backfill_tables(cur):
     for table_name in ALL_BACKFILL_TABLES:
         cur.execute(f"analyze {table_name}")
+
+
+CORE_BACKFILL_TABLES = tuple(
+    table_name for table_name in ALL_BACKFILL_TABLES if table_name.startswith("core.")
+)
+
+
+def core_tables_have_rows() -> bool:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            for table_name in CORE_BACKFILL_TABLES:
+                cur.execute("select to_regclass(%s)", (table_name,))
+                if cur.fetchone()[0] is None:
+                    continue
+                cur.execute(f"select exists (select 1 from {table_name} limit 1)")
+                if cur.fetchone()[0]:
+                    return True
+    return False
+
+
+def drop_backfill_schemas():
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("drop schema if exists mart cascade")
+            cur.execute("drop schema if exists core cascade")
+            cur.execute("drop schema if exists staging cascade")
+            cur.execute("drop schema if exists etl cascade")
+        conn.commit()
+
+
+def restore_backfill_table_settings_safely():
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                reset_backfill_table_settings(cur)
+            conn.commit()
+    except Exception as exc:  # pragma: no cover - best-effort failure cleanup
+        typer.echo(f"[backfill] WARNING: could not restore table settings: {exc}")
+
+
+def assert_backfill_referential_integrity(cur):
+    checks = [
+        (
+            "case_version.case_pk",
+            """
+            select count(*)
+            from core.case_version cv
+            left join core.case_master cm on cm.case_pk = cv.case_pk
+            where cm.case_pk is null
+            """,
+        ),
+        (
+            "case_drug.case_version_pk",
+            """
+            select count(*)
+            from core.case_drug child
+            left join core.case_version cv on cv.case_version_pk = child.case_version_pk
+            where cv.case_version_pk is null
+            """,
+        ),
+        (
+            "case_reaction.case_version_pk",
+            """
+            select count(*)
+            from core.case_reaction child
+            left join core.case_version cv on cv.case_version_pk = child.case_version_pk
+            where cv.case_version_pk is null
+            """,
+        ),
+        (
+            "case_outcome.case_version_pk",
+            """
+            select count(*)
+            from core.case_outcome child
+            left join core.case_version cv on cv.case_version_pk = child.case_version_pk
+            where cv.case_version_pk is null
+            """,
+        ),
+        (
+            "case_therapy.case_version_pk",
+            """
+            select count(*)
+            from core.case_therapy child
+            left join core.case_version cv on cv.case_version_pk = child.case_version_pk
+            where cv.case_version_pk is null
+            """,
+        ),
+        (
+            "case_indication.case_version_pk",
+            """
+            select count(*)
+            from core.case_indication child
+            left join core.case_version cv on cv.case_version_pk = child.case_version_pk
+            where cv.case_version_pk is null
+            """,
+        ),
+        (
+            "case_report_source.case_version_pk",
+            """
+            select count(*)
+            from core.case_report_source child
+            left join core.case_version cv on cv.case_version_pk = child.case_version_pk
+            where cv.case_version_pk is null
+            """,
+        ),
+        (
+            "case_version.latest_unique",
+            """
+            select count(*)
+            from (
+                select case_pk
+                from core.case_version
+                where is_latest_known = true
+                group by case_pk
+                having count(*) > 1
+            ) duplicate_latest
+            """,
+        ),
+    ]
+
+    failures: list[str] = []
+    for name, query in checks:
+        cur.execute(query)
+        count = cur.fetchone()[0]
+        if count:
+            failures.append(f"{name}={count}")
+
+    if failures:
+        raise RuntimeError(
+            "Backfill integrity check failed: " + ", ".join(failures)
+        )
 
 
 LOADERS = {
@@ -376,6 +507,13 @@ def finalize_backfill(
             help="Run a full-database QA pass after finalization.",
         ),
     ] = False,
+    maintenance_work_mem: Annotated[
+        str,
+        typer.Option(
+            "--maintenance-work-mem",
+            help="PostgreSQL maintenance_work_mem for deferred index builds.",
+        ),
+    ] = "512MB",
 ):
     started_at = time.perf_counter()
     index_statements = deferred_index_statements()
@@ -383,9 +521,11 @@ def finalize_backfill(
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("set local synchronous_commit = off")
-            cur.execute("set local maintenance_work_mem = '1GB'")
-            cur.execute(f"set local max_parallel_maintenance_workers = {default_parallel_workers(0)}")
+            cur.execute("select set_config('maintenance_work_mem', %s, true)", (maintenance_work_mem,))
+            cur.execute("set local max_parallel_maintenance_workers = 2")
             reset_backfill_table_settings(cur)
+            typer.echo("Finalizing backfill: checking referential integrity")
+            assert_backfill_referential_integrity(cur)
             if durable:
                 typer.echo("Finalizing backfill: converting tables back to logged mode")
                 set_tables_logged(cur)
@@ -1839,9 +1979,16 @@ def backfill_all(
     max_workers: Annotated[
         int,
         typer.Option(
-            help="Number of parallel workers (0 = auto based on CPU count).",
+            help="Number of parallel quarter workers.",
         ),
-    ] = 0,
+    ] = 2,
+    reset: Annotated[
+        bool,
+        typer.Option(
+            "--reset/--no-reset",
+            help="Drop and recreate ETL/staging/core/mart schemas before loading.",
+        ),
+    ] = False,
     durable: Annotated[
         bool,
         typer.Option(
@@ -1856,99 +2003,193 @@ def backfill_all(
             help="Run a full-database QA pass after finalization.",
         ),
     ] = False,
+    work_mem: Annotated[
+        str,
+        typer.Option(
+            "--work-mem",
+            help="PostgreSQL work_mem used by load sessions.",
+        ),
+    ] = "128MB",
+    maintenance_work_mem: Annotated[
+        str,
+        typer.Option(
+            "--maintenance-work-mem",
+            help="PostgreSQL maintenance_work_mem used during finalization.",
+        ),
+    ] = "512MB",
+    copy_chunk_mb: Annotated[
+        int,
+        typer.Option(
+            "--copy-chunk-mb",
+            help="Approximate text chunk size sent to PostgreSQL COPY.",
+        ),
+    ] = 4,
 ):
-    """Fast full backfill: bypass staging, load all quarters in parallel."""
+    """Fresh full backfill: stream ASCII files directly into normalized core tables."""
     from faersdb.detect import discover_files
     from faersdb.direct_load import (
-        load_quarter_demo,
+        load_all_demo,
+        load_quarter_delete,
         load_quarter_links,
+        purge_deleted_link_rows,
         recompute_latest_case_flags_global,
     )
 
     started_at = time.perf_counter()
+    initialized = False
+    finalized = False
 
-    # ---- Phase 1: init-db ----
-    typer.echo("[backfill] Initializing database with fast_backfill profile")
-    init_db(profile="fast_backfill")
+    if max_workers < 1:
+        raise typer.BadParameter("--max-workers must be at least 1")
+    if copy_chunk_mb < 1:
+        raise typer.BadParameter("--copy-chunk-mb must be at least 1")
 
-    # ---- Phase 2: discover quarters & files ----
-    root = Path(settings.data_root)
-    quarters = discover_quarters(root)
-    if not quarters:
-        typer.echo("[backfill] No quarter folders found. Aborting.")
+    if not reset and core_tables_have_rows():
+        typer.echo(
+            "[backfill] Refusing to run against non-empty core tables. "
+            "Use --reset for a fresh rebuild."
+        )
         raise typer.Exit(1)
 
-    quarter_work: list[tuple[dict, list[tuple[str, Path]]]] = []
-    total_files = 0
-    for q in quarters:
-        files = discover_files(Path(q["folder_path"]))
-        if files:
-            quarter_work.append((q, files))
-            total_files += len(files)
+    try:
+        # ---- Phase 1: reset/init ----
+        if reset:
+            typer.echo("[backfill] Resetting database schemas")
+            drop_backfill_schemas()
 
-    typer.echo(
-        f"[backfill] Found {len(quarter_work)} quarters, {total_files} files"
-    )
+        typer.echo("[backfill] Initializing database with fast_backfill profile")
+        init_db(profile="fast_backfill")
+        initialized = True
 
-    # ---- Phase A: sequential DEMO loading ----
-    # case_master has a unique index that causes deadlocks under concurrent
-    # upserts, so we load all DEMO files one quarter at a time.
-    typer.echo("[backfill] Phase A: loading DEMO (sequential, builds case_master)")
-    phase_a_start = time.perf_counter()
-    for q_info, q_files in quarter_work:
-        load_quarter_demo(q_info, q_files)
-    typer.echo(
-        f"[backfill] Phase A done in "
-        f"{format_duration(time.perf_counter() - phase_a_start)}"
-    )
+        # ---- Phase 2: discover quarters & files ----
+        root = Path(settings.data_root)
+        quarters = discover_quarters(root)
+        if not quarters:
+            typer.echo("[backfill] No quarter folders found. Aborting.")
+            raise typer.Exit(1)
 
-    # ---- Phase B: parallel link-table loading ----
-    # Each quarter writes to distinct rows in link tables, so this is safe.
-    worker_count = default_parallel_workers(max_workers)
-    typer.echo(
-        f"[backfill] Phase B: loading link tables + DELETE "
-        f"(parallel, {worker_count} workers)"
-    )
-    phase_b_start = time.perf_counter()
+        quarter_work: list[tuple[dict, list[tuple[str, Path]]]] = []
+        total_files = 0
+        for q in quarters:
+            files = discover_files(Path(q["folder_path"]))
+            if files:
+                quarter_work.append((q, files))
+                total_files += len(files)
 
-    all_results: list[dict] = []
-    errors: list[Exception] = []
+        if not quarter_work:
+            typer.echo("[backfill] No loadable FAERS files found. Aborting.")
+            raise typer.Exit(1)
 
-    with ProcessPoolExecutor(max_workers=worker_count) as executor:
-        futures = {
-            executor.submit(load_quarter_links, q_info, q_files): q_info["source_quarter"]
-            for q_info, q_files in quarter_work
-        }
-        for future in as_completed(futures):
-            quarter_name = futures[future]
-            try:
-                result = future.result()
-                all_results.append(result)
-            except Exception as exc:
-                typer.echo(f"[backfill] ERROR in {quarter_name}: {exc}")
-                errors.append(exc)
+        typer.echo(
+            f"[backfill] Found {len(quarter_work)} quarters, {total_files} files"
+        )
+        typer.echo(
+            "[backfill] Resources: "
+            f"workers={max_workers}, work_mem={work_mem}, "
+            f"maintenance_work_mem={maintenance_work_mem}, "
+            f"copy_chunk_mb={copy_chunk_mb}"
+        )
 
-    if errors:
-        typer.echo(f"[backfill] {len(errors)} quarter(s) failed.")
-        raise errors[0]
+        # ---- Phase A: DEMO loading ----
+        typer.echo("[backfill] Phase A: loading all DEMO files")
+        phase_a_start = time.perf_counter()
+        load_all_demo(
+            quarter_work,
+            work_mem=work_mem,
+            copy_chunk_mb=copy_chunk_mb,
+        )
+        typer.echo(
+            f"[backfill] Phase A done in "
+            f"{format_duration(time.perf_counter() - phase_a_start)}"
+        )
 
-    typer.echo(
-        f"[backfill] Phase B done in "
-        f"{format_duration(time.perf_counter() - phase_b_start)}"
-    )
+        # ---- Phase B: parallel link-table loading ----
+        typer.echo(
+            f"[backfill] Phase B: loading link tables "
+            f"(parallel, {max_workers} workers)"
+        )
+        phase_b_start = time.perf_counter()
+        errors: list[Exception] = []
 
-    # ---- Phase C: global is_latest_known recomputation ----
-    with get_conn() as conn:
-        recompute_latest_case_flags_global(conn)
+        if max_workers == 1:
+            for q_info, q_files in quarter_work:
+                try:
+                    load_quarter_links(
+                        q_info,
+                        q_files,
+                        work_mem=work_mem,
+                        copy_chunk_mb=copy_chunk_mb,
+                    )
+                except Exception as exc:
+                    typer.echo(f"[backfill] ERROR in {q_info['source_quarter']}: {exc}")
+                    errors.append(exc)
+        else:
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(
+                        load_quarter_links,
+                        q_info,
+                        q_files,
+                        work_mem=work_mem,
+                        copy_chunk_mb=copy_chunk_mb,
+                    ): q_info["source_quarter"]
+                    for q_info, q_files in quarter_work
+                }
+                for future in as_completed(futures):
+                    quarter_name = futures[future]
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        typer.echo(f"[backfill] ERROR in {quarter_name}: {exc}")
+                        errors.append(exc)
 
-    # ---- Phase D: finalize (indexes + analyze) ----
-    typer.echo("[backfill] Finalizing: building indexes and running ANALYZE")
-    finalize_backfill(durable=durable, run_qa=run_qa)
+        if errors:
+            typer.echo(f"[backfill] {len(errors)} quarter(s) failed.")
+            raise errors[0]
 
-    typer.echo(
-        f"[backfill] Complete! Total elapsed: "
-        f"{format_duration(time.perf_counter() - started_at)}"
-    )
+        typer.echo(
+            f"[backfill] Phase B done in "
+            f"{format_duration(time.perf_counter() - phase_b_start)}"
+        )
+
+        # ---- Phase C: DELETE loading and deleted-link cleanup ----
+        typer.echo("[backfill] Phase C: applying DELETE files")
+        phase_c_start = time.perf_counter()
+        for q_info, q_files in quarter_work:
+            load_quarter_delete(
+                q_info,
+                q_files,
+                work_mem=work_mem,
+                copy_chunk_mb=copy_chunk_mb,
+            )
+        with get_conn() as conn:
+            purge_deleted_link_rows(conn)
+        typer.echo(
+            f"[backfill] Phase C done in "
+            f"{format_duration(time.perf_counter() - phase_c_start)}"
+        )
+
+        # ---- Phase D: global is_latest_known recomputation ----
+        with get_conn() as conn:
+            recompute_latest_case_flags_global(conn, work_mem=work_mem)
+
+        # ---- Phase E: finalize (settings, integrity, indexes, analyze) ----
+        typer.echo("[backfill] Finalizing: checking integrity, building indexes, running ANALYZE")
+        finalize_backfill(
+            durable=durable,
+            run_qa=run_qa,
+            maintenance_work_mem=maintenance_work_mem,
+        )
+        finalized = True
+
+        typer.echo(
+            f"[backfill] Complete! Total elapsed: "
+            f"{format_duration(time.perf_counter() - started_at)}"
+        )
+    except Exception:
+        if initialized and not finalized:
+            restore_backfill_table_settings_safely()
+        raise
 
 
 if __name__ == "__main__":

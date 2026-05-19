@@ -3,7 +3,8 @@ from fastapi.testclient import TestClient
 
 from faersdb import cli
 from faersdb.api import app
-from tests.test_pipeline_integration import pipeline_env_factory
+
+pytest_plugins = ["tests.test_pipeline_integration"]
 
 
 @pytest.fixture()
