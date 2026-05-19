@@ -11,9 +11,15 @@ from faersdb.api_models import (
     CaseSearchResponse,
     DrugReactionAggregateParams,
     DrugReactionAggregateResponse,
+    FilterMetadataResponse,
     HealthResponse,
 )
-from faersdb.queries import aggregate_drug_reactions, get_case_detail, search_cases
+from faersdb.queries import (
+    aggregate_drug_reactions,
+    get_case_detail,
+    get_filter_metadata,
+    search_cases,
+)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -31,6 +37,7 @@ def root():
         "name": "faers-db",
         "app": "/app",
         "docs": "/docs",
+        "filters": "/filters/metadata",
         "health": "/health",
     }
 
@@ -45,8 +52,16 @@ def health():
     return HealthResponse(status="ok")
 
 
+@app.get("/filters/metadata", response_model=FilterMetadataResponse)
+def filter_metadata_endpoint():
+    return FilterMetadataResponse.model_validate(get_filter_metadata())
+
+
 @app.get("/cases/search", response_model=CaseSearchResponse)
 def search_cases_endpoint(params: Annotated[CaseSearchParams, Depends()]):
+    errors = params.validation_errors()
+    if errors:
+        raise HTTPException(status_code=422, detail=errors)
     return CaseSearchResponse.model_validate(search_cases(params))
 
 
@@ -54,6 +69,9 @@ def search_cases_endpoint(params: Annotated[CaseSearchParams, Depends()]):
 def aggregate_drug_reactions_endpoint(
     params: Annotated[DrugReactionAggregateParams, Depends()]
 ):
+    errors = params.validation_errors()
+    if errors:
+        raise HTTPException(status_code=422, detail=errors)
     return DrugReactionAggregateResponse.model_validate(aggregate_drug_reactions(params))
 
 

@@ -23,7 +23,7 @@ def _create_sample_quarters(data_root):
         """
         primaryid$caseid$caseversion$i_f_code$event_dt$mfr_dt$fda_dt$rept_cod$auth_num$lit_ref$age$age_cod$age_grp$sex$wt$wt_cod$reporter_country
         1001$10$1$I$20250101$20250102$20250103$EXP$AUTH-10$$65$YR$E$M$80$KG$US
-        2001$20$1$I$20250104$20250105$20250106$EXP$$$35$YR$A$F$60$KG$US
+        2001$20$1$F$20250104$20250105$20250106$LIT$$$35$YR$A$F$60$KG$CA
         """,
     )
     _write_text(
@@ -32,8 +32,8 @@ def _create_sample_quarters(data_root):
         primaryid$caseid$drug_seq$role_cod$drugname$prod_ai$route$dose_vbm$dose_amt$dose_unit$start_dt$end_dt
         1001$10$1$PS$ASPIRIN$ASPIRIN$ORAL$TAB$10$MG$20250101$20250102
         1001$10$1$PS$ASPIRIN$ASPIRIN$IV$INF$20$MG$20250101$20250103
-        2001$20$1$PS$IBUPROFEN$IBUPROFEN$ORAL$TAB$5$MG$20250104$
-        2001$20$1$PS$IBUPROFEN$IBUPROFEN$ORAL$TAB$5$MG$20250104$
+        2001$20$1$SS$IBUPROFEN$IBUPROFEN$ORAL$TAB$5$MG$20250104$
+        2001$20$1$SS$IBUPROFEN$IBUPROFEN$ORAL$TAB$5$MG$20250104$
         """,
     )
     _write_text(
@@ -75,7 +75,7 @@ def _create_sample_quarters(data_root):
         """
         primaryid$caseid$rpsr_cod
         1001$10$HP
-        2001$20$HP
+        2001$20$MD
         """,
     )
 
@@ -341,3 +341,25 @@ def test_pipeline_rerun_is_idempotent(pipeline_env_factory):
         after = _database_snapshot()
 
     assert before == after
+
+
+def test_init_db_can_be_rerun_after_view_shape_changes(pipeline_env_factory):
+    with pipeline_env_factory():
+        cli.init_db(profile="standard")
+        cli.init_db(profile="standard")
+
+        with connect(settings.pg_dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    select column_name
+                    from information_schema.columns
+                    where table_schema = 'mart'
+                      and table_name = 'case_latest'
+                    order by ordinal_position
+                    """
+                )
+                columns = [row[0] for row in cur.fetchall()]
+
+    assert "report_type" in columns
+    assert "initial_or_followup" in columns

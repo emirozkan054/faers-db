@@ -1,6 +1,10 @@
 from decimal import Decimal
 
-from faersdb.api_models import CaseSearchParams, DrugReactionAggregateParams
+from faersdb.api_models import (
+    CaseSearchParams,
+    DrugReactionAggregateParams,
+    FilterMetadataResponse,
+)
 from faersdb.db import get_dict_conn
 
 
@@ -22,23 +26,153 @@ def _like_clause(value: str) -> str:
     return f"%{value.upper()}%"
 
 
-def _build_case_filters(params: CaseSearchParams) -> tuple[str, list]:
-    clauses = ["upper(cdr.drugname) like %s"]
-    query_params: list = [_like_clause(params.drug_name)]
-
-    if params.reaction_pt:
-        clauses.append("upper(cdr.reaction_pt) like %s")
-        query_params.append(_like_clause(params.reaction_pt))
+def _build_filter_sql(params, alias: str = "cdr") -> tuple[str, list]:
+    clauses: list[str] = []
+    query_params: list = []
 
     if params.quarter:
-        clauses.append("cdr.source_quarter = %s")
+        clauses.append(f"{alias}.source_quarter = %s")
         query_params.append(params.quarter)
 
-    return " where " + " and ".join(clauses), query_params
+    if params.report_type:
+        clauses.append(f"upper(coalesce({alias}.report_type, '')) = %s")
+        query_params.append(params.report_type)
+
+    if params.initial_or_followup:
+        clauses.append(f"upper(coalesce({alias}.initial_or_followup, '')) = %s")
+        query_params.append(params.initial_or_followup)
+
+    if params.event_dt_from:
+        clauses.append(f"{alias}.event_dt >= %s")
+        query_params.append(params.event_dt_from)
+    if params.event_dt_to:
+        clauses.append(f"{alias}.event_dt <= %s")
+        query_params.append(params.event_dt_to)
+    if params.fda_dt_from:
+        clauses.append(f"{alias}.fda_dt >= %s")
+        query_params.append(params.fda_dt_from)
+    if params.fda_dt_to:
+        clauses.append(f"{alias}.fda_dt <= %s")
+        query_params.append(params.fda_dt_to)
+    if params.mfr_dt_from:
+        clauses.append(f"{alias}.mfr_dt >= %s")
+        query_params.append(params.mfr_dt_from)
+    if params.mfr_dt_to:
+        clauses.append(f"{alias}.mfr_dt <= %s")
+        query_params.append(params.mfr_dt_to)
+
+    if params.sex_std:
+        clauses.append(f"upper(coalesce({alias}.sex_std, '')) = %s")
+        query_params.append(params.sex_std)
+    if params.age_min is not None:
+        clauses.append(f"{alias}.age_value >= %s")
+        query_params.append(params.age_min)
+    if params.age_max is not None:
+        clauses.append(f"{alias}.age_value <= %s")
+        query_params.append(params.age_max)
+    if params.age_unit:
+        clauses.append(f"upper(coalesce({alias}.age_unit, '')) = %s")
+        query_params.append(params.age_unit)
+    if params.age_group:
+        clauses.append(f"upper(coalesce({alias}.age_group, '')) = %s")
+        query_params.append(params.age_group)
+    if params.weight_min is not None:
+        clauses.append(f"{alias}.weight_kg >= %s")
+        query_params.append(params.weight_min)
+    if params.weight_max is not None:
+        clauses.append(f"{alias}.weight_kg <= %s")
+        query_params.append(params.weight_max)
+    if params.reporter_country:
+        clauses.append(f"upper(coalesce({alias}.reporter_country, '')) = %s")
+        query_params.append(params.reporter_country)
+
+    if params.drug_name:
+        clauses.append(f"upper(coalesce({alias}.drugname, '')) like %s")
+        query_params.append(_like_clause(params.drug_name))
+    if params.prod_ai:
+        clauses.append(f"upper(coalesce({alias}.prod_ai, '')) like %s")
+        query_params.append(_like_clause(params.prod_ai))
+    if params.role_cod:
+        clauses.append(f"upper(coalesce({alias}.role_cod, '')) = %s")
+        query_params.append(params.role_cod)
+    if params.route:
+        clauses.append(f"upper(coalesce({alias}.route, '')) = %s")
+        query_params.append(params.route)
+    if params.dose_unit:
+        clauses.append(f"upper(coalesce({alias}.dose_unit, '')) = %s")
+        query_params.append(params.dose_unit)
+    if params.dose_min is not None:
+        clauses.append(f"{alias}.dose_amt >= %s")
+        query_params.append(params.dose_min)
+    if params.dose_max is not None:
+        clauses.append(f"{alias}.dose_amt <= %s")
+        query_params.append(params.dose_max)
+
+    if params.reaction_pt:
+        clauses.append(f"upper(coalesce({alias}.reaction_pt, '')) like %s")
+        query_params.append(_like_clause(params.reaction_pt))
+    if params.reaction_outcome:
+        clauses.append(f"upper(coalesce({alias}.reaction_outcome, '')) = %s")
+        query_params.append(params.reaction_outcome)
+    if params.case_outcome:
+        clauses.append(
+            f"""
+            exists (
+                select 1
+                from unnest(coalesce({alias}.outcomes, '{{}}'::text[])) as outcome
+                where upper(outcome) = %s
+            )
+            """
+        )
+        query_params.append(params.case_outcome)
+
+    if params.indication_pt:
+        clauses.append(f"upper(coalesce({alias}.indication_pt, '')) like %s")
+        query_params.append(_like_clause(params.indication_pt))
+
+    if params.therapy_start_from:
+        clauses.append(f"{alias}.therapy_start_dt >= %s")
+        query_params.append(params.therapy_start_from)
+    if params.therapy_start_to:
+        clauses.append(f"{alias}.therapy_start_dt <= %s")
+        query_params.append(params.therapy_start_to)
+    if params.therapy_end_from:
+        clauses.append(f"{alias}.therapy_end_dt >= %s")
+        query_params.append(params.therapy_end_from)
+    if params.therapy_end_to:
+        clauses.append(f"{alias}.therapy_end_dt <= %s")
+        query_params.append(params.therapy_end_to)
+    if params.dur_min is not None:
+        clauses.append(f"{alias}.therapy_dur >= %s")
+        query_params.append(params.dur_min)
+    if params.dur_max is not None:
+        clauses.append(f"{alias}.therapy_dur <= %s")
+        query_params.append(params.dur_max)
+    if params.dur_cod:
+        clauses.append(f"upper(coalesce({alias}.therapy_dur_cod, '')) = %s")
+        query_params.append(params.dur_cod)
+
+    if params.reporter_type:
+        clauses.append(
+            f"""
+            exists (
+                select 1
+                from unnest(coalesce({alias}.reporter_types, '{{}}'::text[])) as reporter_type
+                where upper(reporter_type) = %s
+            )
+            """
+        )
+        query_params.append(params.reporter_type)
+
+    where_clause = ""
+    if clauses:
+        where_clause = " where " + " and ".join(f"({clause.strip()})" for clause in clauses)
+
+    return where_clause, query_params
 
 
 def search_cases(params: CaseSearchParams) -> dict:
-    where_clause, query_params = _build_case_filters(params)
+    where_clause, query_params = _build_filter_sql(params)
 
     count_sql = f"""
         with filtered_cases as (
@@ -72,18 +206,47 @@ def search_cases(params: CaseSearchParams) -> dict:
             p.source_report_id,
             p.source_case_id,
             p.case_version_num,
+            p.report_type,
+            p.initial_or_followup,
             p.fda_dt,
             p.event_dt,
             p.mfr_dt,
             p.sex_std,
             p.age_value,
             p.age_unit,
+            p.age_group,
+            p.weight_kg,
+            p.reporter_country,
             coalesce((
                 select array_agg(distinct cd.drugname order by cd.drugname)
                 from core.case_drug cd
                 where cd.case_version_pk = p.case_version_pk
                   and cd.drugname is not null
             ), '{{}}'::text[]) as drugs,
+            coalesce((
+                select array_agg(distinct cd.prod_ai order by cd.prod_ai)
+                from core.case_drug cd
+                where cd.case_version_pk = p.case_version_pk
+                  and cd.prod_ai is not null
+            ), '{{}}'::text[]) as active_ingredients,
+            coalesce((
+                select array_agg(distinct cd.role_cod order by cd.role_cod)
+                from core.case_drug cd
+                where cd.case_version_pk = p.case_version_pk
+                  and cd.role_cod is not null
+            ), '{{}}'::text[]) as role_codes,
+            coalesce((
+                select array_agg(distinct cd.route order by cd.route)
+                from core.case_drug cd
+                where cd.case_version_pk = p.case_version_pk
+                  and cd.route is not null
+            ), '{{}}'::text[]) as routes,
+            coalesce((
+                select array_agg(distinct ci.indi_pt order by ci.indi_pt)
+                from core.case_indication ci
+                where ci.case_version_pk = p.case_version_pk
+                  and ci.indi_pt is not null
+            ), '{{}}'::text[]) as indications,
             coalesce((
                 select array_agg(distinct cr.reaction_pt order by cr.reaction_pt)
                 from core.case_reaction cr
@@ -122,23 +285,8 @@ def search_cases(params: CaseSearchParams) -> dict:
     }
 
 
-def _build_aggregate_filters(params: DrugReactionAggregateParams) -> tuple[str, list]:
-    clauses = ["upper(cdr.drugname) like %s"]
-    query_params: list = [_like_clause(params.drug_name)]
-
-    if params.reaction_pt:
-        clauses.append("upper(cdr.reaction_pt) like %s")
-        query_params.append(_like_clause(params.reaction_pt))
-
-    if params.quarter:
-        clauses.append("cdr.source_quarter = %s")
-        query_params.append(params.quarter)
-
-    return " where " + " and ".join(clauses), query_params
-
-
 def aggregate_drug_reactions(params: DrugReactionAggregateParams) -> dict:
-    where_clause, query_params = _build_aggregate_filters(params)
+    where_clause, query_params = _build_filter_sql(params)
 
     base_cte = f"""
         with grouped as (
@@ -148,6 +296,8 @@ def aggregate_drug_reactions(params: DrugReactionAggregateParams) -> dict:
                 count(distinct cdr.canonical_case_id)::int as case_count
             from mart.case_drug_reaction cdr
             {where_clause}
+            {"and" if where_clause else "where"} cdr.drugname is not null
+              and cdr.reaction_pt is not null
             group by cdr.drugname, cdr.reaction_pt
         )
     """
@@ -179,6 +329,91 @@ def aggregate_drug_reactions(params: DrugReactionAggregateParams) -> dict:
     }
 
 
+def get_filter_metadata() -> dict:
+    metadata_sql = """
+        select
+            coalesce((
+                select array_agg(distinct source_quarter order by source_quarter)
+                from mart.case_latest
+            ), '{}'::text[]) as quarters,
+            coalesce((
+                select array_agg(distinct report_type order by report_type)
+                from mart.case_latest
+                where report_type is not null
+            ), '{}'::text[]) as report_types,
+            coalesce((
+                select array_agg(distinct initial_or_followup order by initial_or_followup)
+                from mart.case_latest
+                where initial_or_followup is not null
+            ), '{}'::text[]) as initial_or_followup_values,
+            coalesce((
+                select array_agg(distinct sex_std order by sex_std)
+                from mart.case_latest
+                where sex_std is not null
+            ), '{}'::text[]) as sex_values,
+            coalesce((
+                select array_agg(distinct age_unit order by age_unit)
+                from mart.case_latest
+                where age_unit is not null
+            ), '{}'::text[]) as age_units,
+            coalesce((
+                select array_agg(distinct age_group order by age_group)
+                from mart.case_latest
+                where age_group is not null
+            ), '{}'::text[]) as age_groups,
+            coalesce((
+                select array_agg(distinct reporter_country order by reporter_country)
+                from mart.case_latest
+                where reporter_country is not null
+            ), '{}'::text[]) as reporter_countries,
+            coalesce((
+                select array_agg(distinct role_cod order by role_cod)
+                from mart.case_drug_reaction
+                where role_cod is not null
+            ), '{}'::text[]) as role_codes,
+            coalesce((
+                select array_agg(distinct route order by route)
+                from mart.case_drug_reaction
+                where route is not null
+            ), '{}'::text[]) as routes,
+            coalesce((
+                select array_agg(distinct dose_unit order by dose_unit)
+                from mart.case_drug_reaction
+                where dose_unit is not null
+            ), '{}'::text[]) as dose_units,
+            coalesce((
+                select array_agg(distinct reaction_outcome order by reaction_outcome)
+                from mart.case_drug_reaction
+                where reaction_outcome is not null
+            ), '{}'::text[]) as reaction_outcomes,
+            coalesce((
+                select array_agg(distinct outcome order by outcome)
+                from core.case_outcome co
+                join mart.case_latest cl on cl.case_version_pk = co.case_version_pk
+                where co.outcome is not null
+            ), '{}'::text[]) as case_outcomes,
+            coalesce((
+                select array_agg(distinct reporter_type order by reporter_type)
+                from core.case_report_source rs
+                join mart.case_latest cl on cl.case_version_pk = rs.case_version_pk
+                where rs.reporter_type is not null
+            ), '{}'::text[]) as reporter_types,
+            coalesce((
+                select array_agg(distinct dur_cod order by dur_cod)
+                from core.case_therapy ct
+                join mart.case_latest cl on cl.case_version_pk = ct.case_version_pk
+                where ct.dur_cod is not null
+            ), '{}'::text[]) as dur_codes
+    """
+
+    with get_dict_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(metadata_sql)
+            record = _normalize_record(cur.fetchone())
+
+    return FilterMetadataResponse.model_validate(record).model_dump()
+
+
 def get_case_detail(case_version_pk: int) -> dict | None:
     header_sql = """
         select
@@ -190,12 +425,17 @@ def get_case_detail(case_version_pk: int) -> dict | None:
             cl.source_report_id,
             cl.source_case_id,
             cl.case_version_num,
+            cl.report_type,
+            cl.initial_or_followup,
             cl.fda_dt,
             cl.event_dt,
             cl.mfr_dt,
             cl.sex_std,
             cl.age_value,
             cl.age_unit,
+            cl.age_group,
+            cl.weight_kg,
+            cl.reporter_country,
             coalesce((
                 select array_agg(distinct co.outcome order by co.outcome)
                 from core.case_outcome co

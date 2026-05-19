@@ -325,6 +325,9 @@ create index if not exists idx_case_indication_case_version_pk
 create index if not exists idx_case_report_source_case_version_pk
     on core.case_report_source (case_version_pk);
 
+drop view if exists mart.case_drug_reaction;
+drop view if exists mart.case_latest;
+
 create or replace view mart.case_latest as
 select
     cm.case_pk,
@@ -335,12 +338,17 @@ select
     cv.source_report_id,
     cv.source_case_id,
     cv.case_version_num,
+    cv.report_type,
+    cv.initial_or_followup,
     cv.fda_dt,
     cv.event_dt,
     cv.mfr_dt,
     cv.sex_std,
     cv.age_value,
-    cv.age_unit
+    cv.age_unit,
+    cv.age_group,
+    cv.weight_kg,
+    cv.reporter_country
 from core.case_master cm
 join core.case_version cv
   on cv.case_pk = cm.case_pk
@@ -354,12 +362,31 @@ select
     cv.source_system,
     cv.source_quarter,
     cv.source_report_id,
+    cv.report_type,
+    cv.initial_or_followup,
+    cv.event_dt,
+    cv.mfr_dt,
+    cv.fda_dt,
+    cv.sex_std,
+    cv.age_value,
+    cv.age_unit,
+    cv.age_group,
+    cv.weight_kg,
+    cv.reporter_country,
     cd.drug_seq,
     cd.role_cod,
     cd.drugname,
     cd.prod_ai,
+    cd.route,
+    cd.dose_vbm,
+    cd.dose_amt,
+    cd.dose_unit,
+    cd.start_dt as drug_start_dt,
+    cd.end_dt as drug_end_dt,
     ct.start_dt as therapy_start_dt,
     ct.end_dt as therapy_end_dt,
+    ct.dur as therapy_dur,
+    ct.dur_cod as therapy_dur_cod,
     outcomes.outcomes,
     report_sources.reporter_types,
     cr.reaction_pt,
