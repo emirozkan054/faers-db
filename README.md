@@ -1,178 +1,145 @@
 # FAERS DB
 
-A local-first FAERS warehouse and query API for research workflows.
+A local-first FAERS (FDA Adverse Event Reporting System) warehouse and query API designed for research workflows.
 
-## What This Repo Provides
+This project provides an ETL pipeline to load FAERS quarterly ASCII data into a normalized PostgreSQL database, a read-only HTTP API to query the data, and a lightweight web UI to browse cases and aggregate statistics.
 
-- A PostgreSQL ETL pipeline that loads FAERS quarterly ASCII files into normalized `core` tables.
-- Research-oriented marts such as `mart.case_latest` and `mart.case_drug_reaction`.
-- A small read-only HTTP API for building a future UI without exposing raw SQL directly.
+---
 
-## Load The Database
+## 🚀 Quick Start
 
-For the fastest first-time historical load on a laptop:
+### 1. Prerequisites
+- **Python 3.12+**
+- **uv** (for fast dependency management)
+- **PostgreSQL** database
+
+### 2. Configuration
+Create a `.env` file in the root directory (or copy `.env.example` if available) and configure your database connection and data directory:
+
+```env
+# Example .env configuration
+PG_DSN=postgresql://postgres:postgres@localhost:5432/faers
+DATA_ROOT=data/faers
+PIPELINE_PROFILE=standard # or fast_backfill
+```
+
+### 3. Load the Database (ETL)
+If you have FAERS ASCII files stored in your `DATA_ROOT`, you can populate the database. 
+
+**For the first-time historical load (Fast Backfill):**
+Use the `backfill-all` command. This bypasses intermediate staging tables and loads all available quarters in parallel, which is **10-20x faster** than the standard pipeline.
 
 ```bash
-uv run python -m faersdb.cli init-db --profile fast_backfill
+# This single command initializes the DB, discovers files, loads all quarters, 
+# recomputes case flags, builds indexes, and runs ANALYZE.
+uv run python -m faersdb.cli backfill-all --max-workers 4
+```
+*Note: By default, this leaves tables `UNLOGGED` for speed. If you want standard PostgreSQL durability (WAL logging) after the load finishes, run it with the `--durable` flag.*
+
+**For incremental loads (Standard Profile):**
+When a new quarter is released, use the standard pipeline which safely stages and merges the new data without affecting the rest of the database:
+
+```bash
 uv run python -m faersdb.cli load-manifest
-uv run python -m faersdb.cli run-quarter 2025q4 --profile fast_backfill --max-workers 4
-uv run python -m faersdb.cli finalize-backfill
+uv run python -m faersdb.cli run-quarter 2025q4 --max-workers 4
 ```
 
-Notes:
-
-- `fast_backfill` is optimized for initial loading speed, not crash recovery.
-- `finalize-backfill` keeps tables `UNLOGGED` by default for speed.
-- If you want PostgreSQL durability after the load finishes, run:
-
-```bash
-uv run python -m faersdb.cli finalize-backfill --durable
-```
-
-## Start The API And UI
-
-Run the API locally:
+### 4. Start the API & UI
+Run the API server locally with hot-reloading:
 
 ```bash
 uv run uvicorn faersdb.api:app --reload
 ```
 
-Open the interactive docs at:
+Then visit:
+- **UI Application**: [http://127.0.0.1:8000/app](http://127.0.0.1:8000/app)
+- **Interactive API Docs**: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 
-- `http://127.0.0.1:8000/docs`
-- `http://127.0.0.1:8000/app` for the lightweight researcher UI
+---
 
-## Main API Endpoints
+## 💻 For Developers & Coders
 
-- `GET /health`
-- `GET /filters/metadata`
-- `GET /cases/search`
-- `GET /aggregates/drug-reactions`
-- `GET /cases/{case_version_pk}`
+This project uses `uv` for package management and `FastAPI` for the web layer.
 
-## Research Query Model
+### Project Structure
+- `faersdb/cli.py`: The ETL pipeline and CLI tool for managing the database.
+- `faersdb/api.py`: FastAPI application serving the API and static UI.
+- `faersdb/queries.py`: SQL query logic for the API.
+- `faersdb/staging_load.py` & `faersdb/normalize/`: Data ingestion and normalization logic.
+- `faersdb/static/`: Vanilla frontend UI files (HTML, JS, CSS).
+- `sql/`: Raw SQL scripts, including `001_init.sql` for schema definition.
+- `tests/`: Test suite.
 
-The query layer now supports guided faceted filtering instead of only `drug_name`, `reaction_pt`, and `quarter`.
+### Database Connection
+The application connects to PostgreSQL using `psycopg` (v3). Connection logic is centralized in `faersdb.db`. The connection string is retrieved from `settings.pg_dsn` (configured via `.env`).
 
-Current filter families:
+To connect directly via the `psql` command line tool using the default configuration:
+```bash
+psql postgresql://postgres:postgres@localhost:5432/faers
+```
 
-- Case and time: `quarter`, `report_type`, `initial_or_followup`, `event_dt_from/to`, `fda_dt_from/to`, `mfr_dt_from/to`
-- Demographics: `sex_std`, `age_min/max`, `age_unit`, `age_group`, `weight_min/max`, `reporter_country`
-- Drug: `drug_name`, `prod_ai`, `role_cod`, `route`, `dose_unit`, `dose_min/max`
-- Reaction and outcomes: `reaction_pt`, `reaction_outcome`, `case_outcome`
-- Therapy and indication: `indication_pt`, `therapy_start_from/to`, `therapy_end_from/to`, `dur_min/max`, `dur_cod`
-- Reporter: `reporter_type`
+To open a direct database connection in your Python code:
+```python
+from faersdb.db import get_conn, get_dict_conn
 
-At least one non-pagination filter is required before searching.
+with get_dict_conn() as conn:
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM core.case_master LIMIT 5")
+        print(cur.fetchall())
+```
 
-### Case-Level Versus Drug-Reaction-Level Filters
+### Running Tests
+To run the full test suite using `pytest`:
 
-- `GET /cases/search` returns latest non-deleted case versions that match the selected facets.
-- `GET /aggregates/drug-reactions` returns grouped drug-reaction counts after the same filter logic is applied.
-- Some filters are case-level, such as `sex_std`, `reporter_country`, and `report_type`.
-- Some filters are drug/reaction-level, such as `route`, `role_cod`, `reaction_pt`, and `indication_pt`.
-- Aggregate counts should be interpreted as distinct latest cases, not raw joined row counts.
+```bash
+uv run pytest
+```
+Or for specific components:
+```bash
+uv run pytest tests/test_api.py tests/test_ui.py
+```
 
-## UI Workflow
+---
 
-The local UI is intentionally small and API-backed:
+## 📊 For Researchers & UI Users
 
-- Search latest non-deleted cases across grouped faceted filters
-- View aggregate drug-reaction counts under the same filter set
-- Open a case detail panel with linked drugs, outcomes, and reactions
-- Keep the active search synced into the browser URL for bookmarking or sharing
-- Save named searches locally in the browser with no backend state
-- Page through case results and export the current result set to CSV
-- Export a JSON report stub that includes filters, totals, export timestamp, and current rows
-- Click an aggregate reaction row to feed that reaction back into case search
+The local UI (`http://127.0.0.1:8000/app`) provides a faceted search interface over the FAERS data.
 
-The UI is served by the same FastAPI process, so there is no separate frontend build step.
+### Features
+- **Faceted Search**: Filter by demographics, drug name, reaction, indication, case outcomes, event dates, and more.
+- **Aggregate Views**: See grouped drug-reaction counts across your selected filters.
+- **Case Details**: Open specific cases to see all linked drugs, outcomes, and reactions.
+- **Sharable Links**: Active search parameters are synced to the URL, allowing you to easily bookmark or share queries.
+- **Saved Searches**: Save your frequent queries locally in your browser.
+- **Export Data**: Export result tables to CSV, or export a JSON report stub containing active filters, totals, and the current result set for your methods writeups.
 
-### Shareable URL State
+### Research Query Model
+The underlying database supports a sophisticated query model. 
+- **Case-Level Filters**: e.g., `sex_std`, `reporter_country`, `report_type`.
+- **Drug/Reaction-Level Filters**: e.g., `route`, `role_cod`, `reaction_pt`, `indication_pt`.
 
-- When you run a case or aggregate search, the current filters are written into the browser query string using the same parameter names as the API.
-- Opening that URL later hydrates the form from the query string and reruns the saved search mode automatically.
-- The URL is local-only state. There is no server-side search history or collaboration layer.
+*Note on counts: Aggregate counts shown in the API and UI represent distinct latest cases, not raw joined row counts.*
 
-### Saved Searches
+### Example API Usage
+You can directly interact with the API endpoints to script your data extraction.
 
-- Saved searches live in browser `localStorage`, so they stay on the current machine and browser profile only.
-- Each saved search stores a name, timestamp, search mode, and filter payload.
-- Loading a saved search reapplies the filters and reruns the saved mode.
-- Saving with the same name overwrites the previous saved search, which keeps rename/overwrite behavior simple for a local tool.
-
-### Export Behavior
-
-- CSV exports continue to produce spreadsheet-friendly result rows for cases and aggregate counts.
-- JSON report exports add lightweight research context:
-  - active filters
-  - result totals and pagination
-  - export timestamp
-  - search type
-  - current rows on screen
-- These exports are meant to help with notes, methods writeups, and reproducibility without adding a full report generator.
-
-### Example Queries
-
-Search latest non-deleted cases for a drug:
-
+**Find latest cases for a drug:**
 ```bash
 curl "http://127.0.0.1:8000/cases/search?drug_name=aspirin"
 ```
 
-Filter by drug and reaction:
-
+**Filter by drug, route, and case outcome:**
 ```bash
-curl "http://127.0.0.1:8000/cases/search?drug_name=aspirin&reaction_pt=headache"
+curl "http://127.0.0.1:8000/cases/search?drug_name=aspirin&route=IV&case_outcome=HO"
 ```
 
-Filter by demographics and case metadata:
-
-```bash
-curl "http://127.0.0.1:8000/cases/search?sex_std=F&reporter_country=CA&report_type=LIT"
-```
-
-Filter by drug route, indication, and case outcome:
-
-```bash
-curl "http://127.0.0.1:8000/cases/search?route=IV&indication_pt=pain&case_outcome=HO"
-```
-
-Get aggregate counts for drug/reaction pairs:
-
+**Get aggregate drug-reaction counts:**
 ```bash
 curl "http://127.0.0.1:8000/aggregates/drug-reactions?drug_name=aspirin"
 ```
 
-Get guided filter metadata for selects and researcher workflows:
+---
 
-```bash
-curl "http://127.0.0.1:8000/filters/metadata"
-```
-
-Fetch one case version in detail:
-
-```bash
-curl "http://127.0.0.1:8000/cases/12345"
-```
-
-## Testing
-
-Run the full test suite:
-
-```bash
-uv run python -m pytest -q
-```
-
-Run only the API and UI tests:
-
-```bash
-uv run python -m pytest -q tests/test_api.py tests/test_ui.py
-```
-
-## Local-Only Limitations
-
-- Saved searches are not shared across browsers or computers automatically.
-- Exported JSON reports describe the current UI result set; they are not a frozen copy of the underlying database beyond the exported rows.
-- There is still no authentication, multi-user state, or cloud sync by design.
-
+## ⚠️ Limitations
+- **Local-Only State**: Saved searches are stored in the browser's `localStorage` and are not synced. 
+- **No Authentication**: The application is designed to be run locally and single-tenant. There is no built-in auth or multi-user state.

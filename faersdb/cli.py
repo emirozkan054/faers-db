@@ -1832,5 +1832,122 @@ def run_quarter(
         raise
 
 
+@app.command()
+def backfill_all(
+    max_workers: Annotated[
+        int,
+        typer.Option(
+            help="Number of parallel workers (0 = auto based on CPU count).",
+        ),
+    ] = 0,
+    durable: Annotated[
+        bool,
+        typer.Option(
+            "--durable/--keep-unlogged",
+            help="Convert tables from UNLOGGED to LOGGED after load.",
+        ),
+    ] = False,
+    run_qa: Annotated[
+        bool,
+        typer.Option(
+            "--run-qa/--no-run-qa",
+            help="Run a full-database QA pass after finalization.",
+        ),
+    ] = False,
+):
+    """Fast full backfill: bypass staging, load all quarters in parallel."""
+    from faersdb.detect import discover_files
+    from faersdb.direct_load import (
+        load_quarter_demo,
+        load_quarter_links,
+        recompute_latest_case_flags_global,
+    )
+
+    started_at = time.perf_counter()
+
+    # ---- Phase 1: init-db ----
+    typer.echo("[backfill] Initializing database with fast_backfill profile")
+    init_db(profile="fast_backfill")
+
+    # ---- Phase 2: discover quarters & files ----
+    root = Path(settings.data_root)
+    quarters = discover_quarters(root)
+    if not quarters:
+        typer.echo("[backfill] No quarter folders found. Aborting.")
+        raise typer.Exit(1)
+
+    quarter_work: list[tuple[dict, list[tuple[str, Path]]]] = []
+    total_files = 0
+    for q in quarters:
+        files = discover_files(Path(q["folder_path"]))
+        if files:
+            quarter_work.append((q, files))
+            total_files += len(files)
+
+    typer.echo(
+        f"[backfill] Found {len(quarter_work)} quarters, {total_files} files"
+    )
+
+    # ---- Phase A: sequential DEMO loading ----
+    # case_master has a unique index that causes deadlocks under concurrent
+    # upserts, so we load all DEMO files one quarter at a time.
+    typer.echo("[backfill] Phase A: loading DEMO (sequential, builds case_master)")
+    phase_a_start = time.perf_counter()
+    for q_info, q_files in quarter_work:
+        load_quarter_demo(q_info, q_files)
+    typer.echo(
+        f"[backfill] Phase A done in "
+        f"{format_duration(time.perf_counter() - phase_a_start)}"
+    )
+
+    # ---- Phase B: parallel link-table loading ----
+    # Each quarter writes to distinct rows in link tables, so this is safe.
+    worker_count = default_parallel_workers(max_workers)
+    typer.echo(
+        f"[backfill] Phase B: loading link tables + DELETE "
+        f"(parallel, {worker_count} workers)"
+    )
+    phase_b_start = time.perf_counter()
+
+    all_results: list[dict] = []
+    errors: list[Exception] = []
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {
+            executor.submit(load_quarter_links, q_info, q_files): q_info["source_quarter"]
+            for q_info, q_files in quarter_work
+        }
+        for future in as_completed(futures):
+            quarter_name = futures[future]
+            try:
+                result = future.result()
+                all_results.append(result)
+            except Exception as exc:
+                typer.echo(f"[backfill] ERROR in {quarter_name}: {exc}")
+                errors.append(exc)
+
+    if errors:
+        typer.echo(f"[backfill] {len(errors)} quarter(s) failed.")
+        raise errors[0]
+
+    typer.echo(
+        f"[backfill] Phase B done in "
+        f"{format_duration(time.perf_counter() - phase_b_start)}"
+    )
+
+    # ---- Phase C: global is_latest_known recomputation ----
+    with get_conn() as conn:
+        recompute_latest_case_flags_global(conn)
+
+    # ---- Phase D: finalize (indexes + analyze) ----
+    typer.echo("[backfill] Finalizing: building indexes and running ANALYZE")
+    finalize_backfill(durable=durable, run_qa=run_qa)
+
+    typer.echo(
+        f"[backfill] Complete! Total elapsed: "
+        f"{format_duration(time.perf_counter() - started_at)}"
+    )
+
+
 if __name__ == "__main__":
     app()

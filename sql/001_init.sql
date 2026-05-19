@@ -197,7 +197,7 @@ create table if not exists core.case_version (
     reporter_country text,
     auth_num text,
     lit_ref text,
-    raw_demo jsonb not null,
+    raw_demo jsonb,
     is_latest_known boolean not null default false,
     is_deleted boolean not null default false,
     created_at timestamptz not null default now(),
@@ -221,7 +221,7 @@ create table if not exists core.case_drug (
     start_dt date,
     end_dt date,
     row_hash text not null,
-    raw_drug jsonb not null,
+    raw_drug jsonb,
     created_at timestamptz not null default now(),
     unique (source_system, source_quarter, source_report_id, row_hash)
 );
@@ -235,7 +235,7 @@ create table if not exists core.case_reaction (
     reaction_pt text not null,
     outcome text,
     row_hash text not null,
-    raw_reac jsonb not null,
+    raw_reac jsonb,
     created_at timestamptz not null default now(),
     unique (source_system, source_quarter, source_report_id, row_hash)
 );
@@ -249,7 +249,7 @@ create table if not exists core.case_outcome (
     source_report_id text not null,
     outcome text not null,
     row_hash text not null,
-    raw_outc jsonb not null,
+    raw_outc jsonb,
     created_at timestamptz not null default now(),
     unique (source_system, source_quarter, source_report_id, row_hash)
 );
@@ -266,7 +266,7 @@ create table if not exists core.case_therapy (
     dur integer,
     dur_cod text,
     row_hash text not null,
-    raw_ther jsonb not null,
+    raw_ther jsonb,
     created_at timestamptz not null default now(),
     unique (source_system, source_quarter, source_report_id, row_hash)
 );
@@ -280,7 +280,7 @@ create table if not exists core.case_indication (
     drug_seq integer,
     indi_pt text not null,
     row_hash text not null,
-    raw_indi jsonb not null,
+    raw_indi jsonb,
     created_at timestamptz not null default now(),
     unique (source_system, source_quarter, source_report_id, row_hash)
 );
@@ -293,7 +293,7 @@ create table if not exists core.case_report_source (
     source_report_id text not null,
     reporter_type text not null,
     row_hash text not null,
-    raw_rpsr jsonb not null,
+    raw_rpsr jsonb,
     created_at timestamptz not null default now(),
     unique (source_system, source_quarter, source_report_id, row_hash)
 );
