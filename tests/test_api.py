@@ -1,11 +1,129 @@
 """Tests for the API endpoints using the DuckDB+Parquet backend."""
 
+from datetime import date
+
+import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
 from faersdb.api import app
+from faersdb.config import settings
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def sample_warehouse(tmp_path, monkeypatch):
+    warehouse = tmp_path / "warehouse"
+    warehouse.mkdir()
+    monkeypatch.setattr(settings, "warehouse_dir", str(warehouse))
+
+    pl.DataFrame(
+        {
+            "primaryid": ["1001", "1002", "1003", "1004"],
+            "caseid": ["2001", "2002", "2003", "2004"],
+            "source_quarter": ["2024q1", "2024q2", "2024q2", "2024q3"],
+            "source_system": ["FAERS", "FAERS", "FAERS", "FAERS"],
+            "caseversion": [1, 1, 1, 1],
+            "report_type": ["EXP", "DIR", "PER", "EXP"],
+            "i_f_code": ["I", "F", "I", "F"],
+            "event_dt": [
+                date(2024, 1, 10),
+                date(2024, 2, 10),
+                date(2024, 3, 10),
+                date(2024, 4, 10),
+            ],
+            "mfr_dt": [
+                date(2024, 1, 11),
+                date(2024, 2, 11),
+                date(2024, 3, 11),
+                date(2024, 4, 11),
+            ],
+            "fda_dt": [
+                date(2024, 1, 15),
+                date(2024, 2, 15),
+                date(2024, 3, 15),
+                date(2024, 4, 15),
+            ],
+            "age": [45.0, 30.0, 60.0, 52.0],
+            "age_cod": ["YR", "YR", "YR", "YR"],
+            "age_grp": ["A", "A", "E", "A"],
+            "sex": ["M", "F", "F", "F"],
+            "wt_kg": [80.0, 60.0, 70.0, 65.0],
+            "reporter_country": ["US", "JP", "US", "US"],
+            "auth_num": [None, None, None, None],
+            "lit_ref": [None, None, None, None],
+            "is_deleted": [False, False, False, False],
+        }
+    ).write_parquet(warehouse / "demo.parquet")
+
+    pl.DataFrame(
+        {
+            "primaryid": ["1001", "1002", "1003", "1004"],
+            "source_quarter": ["2024q1", "2024q2", "2024q2", "2024q3"],
+            "drug_seq": [1, 1, 1, 1],
+            "role_cod": ["PS", "PS", "SS", "PS"],
+            "drugname": ["ASPIRIN", "ASPIRIN", "IBUPROFEN", "ASPIRIN"],
+            "prod_ai": ["ACETYLSALICYLIC ACID", "ASPIRIN", "IBUPROFEN", "ASPIRIN"],
+            "route": ["ORAL", "ORAL", "ORAL", "ORAL"],
+            "dose_vbm": [None, None, None, None],
+            "dose_amt": [100.0, 81.0, 200.0, 325.0],
+            "dose_unit": ["MG", "MG", "MG", "MG"],
+            "start_dt": [
+                date(2024, 1, 1),
+                date(2024, 2, 1),
+                date(2024, 3, 1),
+                date(2024, 4, 1),
+            ],
+            "end_dt": [None, None, None, None],
+        }
+    ).write_parquet(warehouse / "drug.parquet")
+
+    pl.DataFrame(
+        {
+            "primaryid": ["1001", "1002", "1003", "1004"],
+            "source_quarter": ["2024q1", "2024q2", "2024q2", "2024q3"],
+            "pt": ["HEADACHE", "NAUSEA", "DIZZINESS", "RASH"],
+            "drug_rec_act": ["UNK", "UNK", "UNK", "UNK"],
+        }
+    ).write_parquet(warehouse / "reac.parquet")
+
+    pl.DataFrame(
+        {
+            "primaryid": ["1001", "1002", "1004"],
+            "source_quarter": ["2024q1", "2024q2", "2024q3"],
+            "outc_cod": ["HO", "OT", "HO"],
+        }
+    ).write_parquet(warehouse / "outc.parquet")
+
+    pl.DataFrame(
+        {
+            "primaryid": ["1001", "1002", "1004"],
+            "source_quarter": ["2024q1", "2024q2", "2024q3"],
+            "drug_seq": [1, 1, 1],
+            "indi_pt": ["PAIN", "FEVER", "PAIN"],
+        }
+    ).write_parquet(warehouse / "indi.parquet")
+
+    pl.DataFrame(
+        {
+            "primaryid": ["1001", "1002", "1004"],
+            "source_quarter": ["2024q1", "2024q2", "2024q3"],
+            "drug_seq": [1, 1, 1],
+            "start_dt": [date(2024, 1, 1), date(2024, 2, 1), date(2024, 4, 1)],
+            "end_dt": [None, None, None],
+            "dur": [10, 5, 14],
+            "dur_cod": ["DY", "DY", "DY"],
+        }
+    ).write_parquet(warehouse / "ther.parquet")
+
+    pl.DataFrame(
+        {
+            "primaryid": ["1001", "1002", "1004"],
+            "source_quarter": ["2024q1", "2024q2", "2024q3"],
+            "rpsr_cod": ["HP", "CN", "HP"],
+        }
+    ).write_parquet(warehouse / "rpsr.parquet")
 
 
 def test_root():

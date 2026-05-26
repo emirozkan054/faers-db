@@ -20,6 +20,8 @@ Create a `.env` file in the root directory:
 ```env
 DATA_ROOT=data/faers
 WAREHOUSE_DIR=warehouse
+MEMORY_LIMIT=2GB
+THREADS=4
 ```
 
 ### 3. Build the Warehouse
@@ -27,15 +29,18 @@ If you have FAERS ASCII files stored in your `DATA_ROOT`, build the Parquet ware
 
 ```bash
 # Build the complete warehouse from all quarters (~5-10 minutes for 88 quarters)
-uv run python -m faersdb.cli build
+uv run python -m faersdb build
 
 # Or build just a single quarter (~3 seconds)
-uv run python -m faersdb.cli build --quarter 2024q1
+uv run python -m faersdb build --quarter 2024q1
+
+# Limit final deduplication memory on smaller machines
+uv run python -m faersdb build --memory-limit 1GB --threads 2
 ```
 
 ### 4. Start the API & UI
 ```bash
-uv run python -m faersdb.cli serve --reload
+uv run python -m faersdb serve --reload
 ```
 
 Then visit:
@@ -86,19 +91,19 @@ FAERS ASCII files (19 GB, 88 quarters)
 
 ```bash
 # Discover available quarter folders
-uv run python -m faersdb.cli scan
+uv run python -m faersdb scan
 
 # Build the warehouse (all quarters)
-uv run python -m faersdb.cli build
+uv run python -m faersdb build
 
 # Build a single quarter
-uv run python -m faersdb.cli build --quarter 2024q1
+uv run python -m faersdb build --quarter 2024q1
 
 # Show warehouse statistics
-uv run python -m faersdb.cli info
+uv run python -m faersdb info
 
 # Start the API server
-uv run python -m faersdb.cli serve --reload
+uv run python -m faersdb serve --reload
 ```
 
 ### Running Tests
@@ -143,7 +148,7 @@ curl "http://127.0.0.1:8000/aggregates/drug-reactions?drug_name=aspirin"
 | Warehouse on disk | ~4-8 GB (Snappy compressed Parquet) |
 | Source data | ~19 GB (ASCII) |
 | Query latency | Sub-second (DuckDB columnar scans) |
-| Memory usage (ETL) | ~200-500 MB peak |
+| Memory usage (ETL) | Bounded by `MEMORY_LIMIT` during final deduplication |
 | Memory usage (API) | ~50-100 MB |
 | External dependencies | None (no database server) |
 

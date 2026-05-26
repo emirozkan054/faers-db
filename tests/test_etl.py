@@ -1,12 +1,14 @@
 """Tests for the ETL pipeline."""
 
-import tempfile
-from pathlib import Path
-
 import polars as pl
 import pytest
 
-from faersdb.etl import _read_ascii_file, _process_demo, _process_drug
+from faersdb.etl import (
+    _process_demo,
+    _process_drug,
+    _read_ascii_file,
+    build_warehouse,
+)
 
 
 @pytest.fixture
@@ -82,3 +84,32 @@ def test_process_drug(sample_drug_file):
     assert "ASPIRIN" in drugs
     assert "IBUPROFEN" in drugs
     assert "METFORMIN" in drugs
+
+
+def test_build_warehouse_uses_shards_and_deduplicates(tmp_path):
+    data_root = tmp_path / "faers"
+    quarter_dir = data_root / "faers_ascii_2024q1" / "ASCII"
+    warehouse_dir = tmp_path / "warehouse"
+    quarter_dir.mkdir(parents=True)
+
+    demo_content = (
+        "primaryid$caseid$caseversion$i_f_code$event_dt$fda_dt$sex\n"
+        "100001$200001$1$I$20240101$20240115$M\n"
+        "100001$200001$1$I$20240101$20240115$M\n"
+        "100002$200002$1$F$20240201$20240215$F\n"
+    )
+    (quarter_dir / "DEMO24Q1.txt").write_text(demo_content, encoding="utf-8")
+
+    results = build_warehouse(
+        data_root,
+        warehouse_dir,
+        memory_limit="256MB",
+        threads=1,
+    )
+
+    assert results["DEMO"] == 2
+    assert not (warehouse_dir / "_build_tmp").exists()
+
+    demo = pl.read_parquet(warehouse_dir / "demo.parquet").sort("primaryid")
+    assert demo["primaryid"].to_list() == ["100001", "100002"]
+    assert "is_deleted" in demo.columns

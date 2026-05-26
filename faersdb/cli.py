@@ -50,6 +50,17 @@ def build(
         "--warehouse", "-w",
         help="Override warehouse directory.",
     ),
+    memory_limit: str = typer.Option(
+        settings.memory_limit,
+        "--memory-limit",
+        help="DuckDB memory limit for final deduplication (e.g. 2GB, 512MB).",
+    ),
+    threads: int = typer.Option(
+        settings.threads,
+        "--threads",
+        min=1,
+        help="Worker threads used by DuckDB finalization.",
+    ),
 ):
     """Build the Parquet warehouse from FAERS ASCII data.
 
@@ -69,6 +80,8 @@ def build(
         data_root=data_root,
         warehouse_dir=warehouse_dir,
         quarter_filter=quarter,
+        memory_limit=memory_limit,
+        threads=threads,
     )
 
     if not results:
@@ -132,3 +145,7 @@ def serve(
         port=port,
         reload=reload,
     )
+
+
+if __name__ == "__main__":
+    app()

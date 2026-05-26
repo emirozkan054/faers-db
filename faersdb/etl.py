@@ -7,8 +7,10 @@ Replaces direct_load.py, staging_load.py, and normalize/ modules.
 from __future__ import annotations
 
 import time
+import shutil
 from pathlib import Path
 
+import duckdb
 import polars as pl
 import typer
 
@@ -32,6 +34,10 @@ def _fmt(seconds: float) -> str:
     return f"{int(hours)}h {int(minutes)}m {secs:.0f}s"
 
 
+def _fmt_mb(size: int) -> str:
+    return f"{size / 1024 / 1024:.1f} MB"
+
+
 def _clean_colname(name: str) -> str:
     return name.replace("\ufeff", "").replace("ï»¿", "").strip().upper()
 
@@ -42,19 +48,20 @@ def _read_ascii_file(file_path: Path) -> pl.LazyFrame:
     All columns are read as Utf8 (strings). Column names are uppercased and
     cleaned of BOM artifacts.
     """
-    df = pl.read_csv(
+    df = pl.scan_csv(
         file_path,
         separator=DELIMITER,
         encoding="utf8-lossy",
         infer_schema=False,       # keep everything as string
+        quote_char=None,          # do not treat double-quotes specially
         ignore_errors=True,
         truncate_ragged_lines=True,
         null_values=[""],
+        low_memory=True,
     )
     # Normalize column names
-    rename_map = {col: _clean_colname(col) for col in df.columns}
-    df = df.rename(rename_map)
-    return df.lazy()
+    rename_map = {col: _clean_colname(col) for col in df.collect_schema().names()}
+    return df.rename(rename_map)
 
 
 def _coalesce_cols(lf: pl.LazyFrame, *names: str) -> pl.Expr:
@@ -305,20 +312,66 @@ def _collect_deleted_ids(
 ) -> set[str]:
     """Collect all primaryids listed in DELETE files across all quarters."""
     deleted: set[str] = set()
+    delete_files: list[Path] = []
     for q in quarters:
         folder = Path(q["folder_path"])
         files = discover_files(folder)
-        delete_files = [p for kind, p in files if kind == "DELETE"]
-        for fp in delete_files:
-            with open(fp, "r", encoding="utf-8-sig", errors="replace") as f:
-                for line in f:
-                    pid = line.strip()
-                    if pid:
-                        deleted.add(pid)
+        delete_files.extend(p for kind, p in files if kind == "DELETE")
+
+    for index, fp in enumerate(delete_files, start=1):
+        typer.echo(f"  DELETE: [{index}/{len(delete_files)}] {fp.name}")
+        with open(fp, "r", encoding="utf-8-sig", errors="replace") as f:
+            for line in f:
+                pid = line.strip()
+                if pid:
+                    deleted.add(pid)
     return deleted
 
 
 # ─── Core Build Logic ─────────────────────────────────────────────────────────
+
+
+def _sql_string(value: str) -> str:
+    """Return a single-quoted DuckDB SQL string literal."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _sql_string_list(values: list[str]) -> str:
+    return "[" + ", ".join(_sql_string(value) for value in values) + "]"
+
+
+def _finalize_shards(
+    shard_paths: list[Path],
+    output_path: Path,
+    warehouse_dir: Path,
+    *,
+    memory_limit: str,
+    threads: int,
+) -> int:
+    """Deduplicate parquet shards into one output file using DuckDB spill logic."""
+    temp_dir = warehouse_dir / "_duckdb_tmp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    temp_output = output_path.with_name(f".{output_path.name}.tmp")
+    temp_output.unlink(missing_ok=True)
+
+    con = duckdb.connect()
+    try:
+        con.execute(f"SET memory_limit={_sql_string(memory_limit)}")
+        con.execute(f"SET threads={max(1, threads)}")
+        con.execute(f"SET temp_directory={_sql_string(str(temp_dir))}")
+        paths_sql = _sql_string_list([str(path) for path in shard_paths])
+        con.execute(
+            "COPY ("
+            f"SELECT DISTINCT * FROM read_parquet({paths_sql}, union_by_name=true)"
+            f") TO {_sql_string(str(temp_output))} "
+            "(FORMAT PARQUET, COMPRESSION SNAPPY)"
+        )
+    finally:
+        con.close()
+
+    temp_output.replace(output_path)
+    return pl.scan_parquet(output_path).select(pl.len()).collect().item()
 
 
 def build_table(
@@ -327,6 +380,8 @@ def build_table(
     warehouse_dir: Path,
     *,
     quarter_filter: str | None = None,
+    memory_limit: str = "2GB",
+    threads: int = 4,
 ) -> int:
     """Build one Parquet table from all quarter files.
 
@@ -336,51 +391,87 @@ def build_table(
     processor = spec["processor"]
     output_path = warehouse_dir / spec["output"]
 
-    frames: list[pl.LazyFrame] = []
-    total_files = 0
-
+    work_items: list[tuple[dict, Path]] = []
     for q in quarters:
         if quarter_filter and q["source_quarter"] != quarter_filter:
             continue
         folder = Path(q["folder_path"])
         files = discover_files(folder)
         kind_files = [p for kind, p in files if kind == table_kind]
+        work_items.extend((q, fp) for fp in kind_files)
 
-        meta = {
-            "source_quarter": q["source_quarter"],
-            "source_system": q["source_system"],
-            "schema_era": q["schema_era"],
-        }
-
-        for fp in kind_files:
-            try:
-                lf = _read_ascii_file(fp)
-                processed = processor(lf, meta)
-                frames.append(processed)
-                total_files += 1
-            except Exception as exc:
-                typer.echo(f"  WARNING: skipping {fp.name}: {exc}")
-
-    if not frames:
+    if not work_items:
         typer.echo(f"  {table_kind}: no files found")
         return 0
 
-    t0 = time.perf_counter()
-    typer.echo(f"  {table_kind}: concatenating {total_files} files...")
-
-    combined = pl.concat(frames, how="diagonal_relaxed")
-    # Deduplicate: for link tables, drop exact duplicate rows
-    result = combined.unique().collect()
-
-    row_count = len(result)
-    result.write_parquet(output_path, compression="snappy", statistics=True)
-
+    input_size = sum(fp.stat().st_size for _, fp in work_items)
     typer.echo(
-        f"  {table_kind}: {row_count:,} rows → {output_path.name} "
-        f"({output_path.stat().st_size / 1024 / 1024:.1f} MB) "
-        f"in {_fmt(time.perf_counter() - t0)}"
+        f"  {table_kind}: processing {len(work_items)} files "
+        f"({_fmt_mb(input_size)} input)"
     )
-    return row_count
+
+    temp_dir = warehouse_dir / "_build_tmp" / table_kind.lower()
+    if temp_dir.exists():
+        shutil.rmtree(temp_dir)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    shard_paths: list[Path] = []
+    shard_count = 0
+
+    try:
+        t0 = time.perf_counter()
+        for index, (q, fp) in enumerate(work_items, start=1):
+            meta = {
+                "source_quarter": q["source_quarter"],
+                "source_system": q["source_system"],
+                "schema_era": q["schema_era"],
+            }
+
+            try:
+                typer.echo(
+                    f"  {table_kind}: [{index}/{len(work_items)}] "
+                    f"{q['source_quarter']} {fp.name} ({_fmt_mb(fp.stat().st_size)})"
+                )
+                lf = _read_ascii_file(fp)
+                processed = processor(lf, meta)
+                shard_path = (
+                    temp_dir
+                    / f"{q['source_quarter']}_{shard_count:03d}_{fp.stem}.parquet"
+                )
+                processed.sink_parquet(
+                    shard_path,
+                    compression="snappy",
+                    statistics=True,
+                )
+                shard_paths.append(shard_path)
+                shard_count += 1
+            except Exception as exc:
+                typer.echo(f"  WARNING: skipping {fp.name}: {exc}")
+
+        if not shard_paths:
+            typer.echo(f"  {table_kind}: no files processed")
+            return 0
+
+        typer.echo(
+            f"  {table_kind}: finalizing {len(shard_paths)} files "
+            f"with DuckDB memory_limit={memory_limit}..."
+        )
+        row_count = _finalize_shards(
+            shard_paths,
+            output_path,
+            warehouse_dir,
+            memory_limit=memory_limit,
+            threads=threads,
+        )
+
+        typer.echo(
+            f"  {table_kind}: {row_count:,} rows → {output_path.name} "
+            f"({output_path.stat().st_size / 1024 / 1024:.1f} MB) "
+            f"in {_fmt(time.perf_counter() - t0)}"
+        )
+        return row_count
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def apply_deletes(
@@ -425,6 +516,8 @@ def build_warehouse(
     warehouse_dir: Path,
     *,
     quarter_filter: str | None = None,
+    memory_limit: str = "2GB",
+    threads: int = 4,
 ) -> dict[str, int]:
     """Build the complete Parquet warehouse from FAERS ASCII data.
 
@@ -456,7 +549,11 @@ def build_warehouse(
             quarters,
             warehouse_dir,
             quarter_filter=quarter_filter,
+            memory_limit=memory_limit,
+            threads=threads,
         )
+
+    shutil.rmtree(warehouse_dir / "_build_tmp", ignore_errors=True)
 
     # Apply deletes
     results["DELETE"] = apply_deletes(quarters, data_root, warehouse_dir)

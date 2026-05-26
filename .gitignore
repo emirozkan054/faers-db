@@ -10,3 +10,10 @@ wheels/
 .venv
 
 data/
+
+# Local/generated runtime files
+.env
+warehouse/*.parquet
+warehouse/*.tmp
+warehouse/_build_tmp/
+warehouse/_duckdb_tmp/
