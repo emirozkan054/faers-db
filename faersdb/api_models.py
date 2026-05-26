@@ -188,9 +188,9 @@ class DrugReactionAggregateParams(ResearchFilterParams):
 
 
 class CaseSummary(BaseModel):
-    case_pk: int
+    case_pk: str | int | None = None
     canonical_case_id: str
-    case_version_pk: int
+    case_version_pk: str
     source_system: str
     source_quarter: str
     source_report_id: str
@@ -276,9 +276,9 @@ class CaseReactionDetail(BaseModel):
 
 
 class CaseDetailResponse(BaseModel):
-    case_pk: int
+    case_pk: str | int | None = None
     canonical_case_id: str
-    case_version_pk: int
+    case_version_pk: str
     source_system: str
     source_quarter: str
     source_report_id: str

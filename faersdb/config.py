@@ -1,18 +1,23 @@
-from typing import Literal
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    pg_dsn: str = "postgresql://postgres:postgres@localhost:5432/faers"
     data_root: str = "data/faers"
-    pipeline_profile: Literal["standard", "fast_backfill"] = "standard"
+    warehouse_dir: str = "warehouse"
+    memory_limit: str = "2GB"
+    threads: int = 4
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_prefix="",
         extra="ignore",
     )
+
+    @property
+    def warehouse_path(self) -> Path:
+        return Path(self.warehouse_dir)
 
 
 settings = Settings()

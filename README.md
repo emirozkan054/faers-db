@@ -2,7 +2,9 @@
 
 A local-first FAERS (FDA Adverse Event Reporting System) warehouse and query API designed for research workflows.
 
-This project provides an ETL pipeline to load FAERS quarterly ASCII data into a normalized PostgreSQL database, a read-only HTTP API to query the data, and a lightweight web UI to browse cases and aggregate statistics.
+This project provides an ETL pipeline to load FAERS quarterly ASCII data into compressed Parquet files, queried in-process by DuckDB. It includes a read-only HTTP API and a lightweight web UI to browse cases and aggregate statistics.
+
+**No external database required** — everything runs from local files.
 
 ---
 
@@ -11,44 +13,29 @@ This project provides an ETL pipeline to load FAERS quarterly ASCII data into a 
 ### 1. Prerequisites
 - **Python 3.12+**
 - **uv** (for fast dependency management)
-- **PostgreSQL** database
 
 ### 2. Configuration
-Create a `.env` file in the root directory (or copy `.env.example` if available) and configure your database connection and data directory:
+Create a `.env` file in the root directory:
 
 ```env
-# Example .env configuration
-PG_DSN=postgresql://postgres:postgres@localhost:5432/faers
 DATA_ROOT=data/faers
-PIPELINE_PROFILE=standard # or fast_backfill
+WAREHOUSE_DIR=warehouse
 ```
 
-### 3. Load the Database (ETL)
-If you have FAERS ASCII files stored in your `DATA_ROOT`, you can populate the database. 
-
-**For the first-time historical load (Fast Backfill):**
-Use the `backfill-all` command. This bypasses intermediate staging tables and loads all available quarters in parallel, which is **10-20x faster** than the standard pipeline.
+### 3. Build the Warehouse
+If you have FAERS ASCII files stored in your `DATA_ROOT`, build the Parquet warehouse:
 
 ```bash
-# This single command initializes the DB, discovers files, loads all quarters, 
-# recomputes case flags, builds indexes, and runs ANALYZE.
-uv run python -m faersdb.cli backfill-all --reset --max-workers 2
-```
-*Note: By default, this leaves tables `UNLOGGED` for speed. If you want standard PostgreSQL durability (WAL logging) after the load finishes, run it with the `--durable` flag.*
+# Build the complete warehouse from all quarters (~5-10 minutes for 88 quarters)
+uv run python -m faersdb.cli build
 
-**For incremental loads (Standard Profile):**
-When a new quarter is released, use the standard pipeline which safely stages and merges the new data without affecting the rest of the database:
-
-```bash
-uv run python -m faersdb.cli load-manifest
-uv run python -m faersdb.cli run-quarter 2025q4 --max-workers 4
+# Or build just a single quarter (~3 seconds)
+uv run python -m faersdb.cli build --quarter 2024q1
 ```
 
 ### 4. Start the API & UI
-Run the API server locally with hot-reloading:
-
 ```bash
-uv run uvicorn faersdb.api:app --reload
+uv run python -m faersdb.cli serve --reload
 ```
 
 Then visit:
@@ -59,44 +46,64 @@ Then visit:
 
 ## 💻 For Developers & Coders
 
-This project uses `uv` for package management and `FastAPI` for the web layer.
+### Architecture
 
-### Project Structure
-- `faersdb/cli.py`: The ETL pipeline and CLI tool for managing the database.
-- `faersdb/api.py`: FastAPI application serving the API and static UI.
-- `faersdb/queries.py`: SQL query logic for the API.
-- `faersdb/staging_load.py` & `faersdb/normalize/`: Data ingestion and normalization logic.
-- `faersdb/static/`: Vanilla frontend UI files (HTML, JS, CSS).
-- `sql/`: Raw SQL scripts, including `001_init.sql` for schema definition.
-- `tests/`: Test suite.
-
-### Database Connection
-The application connects to PostgreSQL using `psycopg` (v3). Connection logic is centralized in `faersdb.db`. The connection string is retrieved from `settings.pg_dsn` (configured via `.env`).
-
-To connect directly via the `psql` command line tool using the default configuration:
-```bash
-psql postgresql://postgres:postgres@localhost:5432/faers
+```
+FAERS ASCII files (19 GB, 88 quarters)
+        │
+        ▼
+  ETL Pipeline (Polars)
+  Read → Normalize → Deduplicate
+        │
+        ▼
+  Parquet Warehouse (~4-8 GB)
+  warehouse/demo.parquet
+  warehouse/drug.parquet
+  warehouse/reac.parquet
+  ...
+        │
+        ▼
+  DuckDB (in-memory, reads Parquet)
+  Columnar scans, predicate pushdown
+        │
+        ▼
+  FastAPI → Static UI
 ```
 
-To open a direct database connection in your Python code:
-```python
-from faersdb.db import get_conn, get_dict_conn
+### Project Structure
+- `faersdb/etl.py`: ETL pipeline — reads ASCII, normalizes, writes Parquet
+- `faersdb/cli.py`: CLI tool (`build`, `serve`, `info`, `scan`)
+- `faersdb/api.py`: FastAPI application serving the API and static UI
+- `faersdb/queries.py`: DuckDB SQL query logic for the API
+- `faersdb/db.py`: DuckDB connection manager with Parquet view registration
+- `faersdb/config.py`: Configuration via pydantic-settings
+- `faersdb/detect.py`: FAERS file detection and classification
+- `faersdb/manifest.py`: Quarter folder discovery
+- `faersdb/static/`: Vanilla frontend UI (HTML, JS, CSS)
+- `tests/`: Test suite
 
-with get_dict_conn() as conn:
-    with conn.cursor() as cur:
-        cur.execute("SELECT * FROM core.case_master LIMIT 5")
-        print(cur.fetchall())
+### CLI Commands
+
+```bash
+# Discover available quarter folders
+uv run python -m faersdb.cli scan
+
+# Build the warehouse (all quarters)
+uv run python -m faersdb.cli build
+
+# Build a single quarter
+uv run python -m faersdb.cli build --quarter 2024q1
+
+# Show warehouse statistics
+uv run python -m faersdb.cli info
+
+# Start the API server
+uv run python -m faersdb.cli serve --reload
 ```
 
 ### Running Tests
-To run the full test suite using `pytest`:
-
 ```bash
 uv run pytest
-```
-Or for specific components:
-```bash
-uv run pytest tests/test_api.py tests/test_ui.py
 ```
 
 ---
@@ -109,37 +116,40 @@ The local UI (`http://127.0.0.1:8000/app`) provides a faceted search interface o
 - **Faceted Search**: Filter by demographics, drug name, reaction, indication, case outcomes, event dates, and more.
 - **Aggregate Views**: See grouped drug-reaction counts across your selected filters.
 - **Case Details**: Open specific cases to see all linked drugs, outcomes, and reactions.
-- **Sharable Links**: Active search parameters are synced to the URL, allowing you to easily bookmark or share queries.
+- **Sharable Links**: Active search parameters are synced to the URL.
 - **Saved Searches**: Save your frequent queries locally in your browser.
-- **Export Data**: Export result tables to CSV, or export a JSON report stub containing active filters, totals, and the current result set for your methods writeups.
-
-### Research Query Model
-The underlying database supports a sophisticated query model. 
-- **Case-Level Filters**: e.g., `sex_std`, `reporter_country`, `report_type`.
-- **Drug/Reaction-Level Filters**: e.g., `route`, `role_cod`, `reaction_pt`, `indication_pt`.
-
-*Note on counts: Aggregate counts shown in the API and UI represent distinct latest cases, not raw joined row counts.*
+- **Export Data**: Export result tables to CSV, or export JSON reports for your methods writeups.
 
 ### Example API Usage
-You can directly interact with the API endpoints to script your data extraction.
-
-**Find latest cases for a drug:**
 ```bash
+# Find latest cases for a drug
 curl "http://127.0.0.1:8000/cases/search?drug_name=aspirin"
-```
 
-**Filter by drug, route, and case outcome:**
-```bash
-curl "http://127.0.0.1:8000/cases/search?drug_name=aspirin&route=IV&case_outcome=HO"
-```
+# Filter by drug, route, and case outcome
+curl "http://127.0.0.1:8000/cases/search?drug_name=aspirin&route=ORAL&case_outcome=HO"
 
-**Get aggregate drug-reaction counts:**
-```bash
+# Get aggregate drug-reaction counts
 curl "http://127.0.0.1:8000/aggregates/drug-reactions?drug_name=aspirin"
 ```
 
 ---
 
+## ⚡ Performance
+
+| Metric | Value |
+|---|---|
+| Full 88-quarter build | ~5-10 minutes |
+| Single quarter build | ~3 seconds |
+| Warehouse on disk | ~4-8 GB (Snappy compressed Parquet) |
+| Source data | ~19 GB (ASCII) |
+| Query latency | Sub-second (DuckDB columnar scans) |
+| Memory usage (ETL) | ~200-500 MB peak |
+| Memory usage (API) | ~50-100 MB |
+| External dependencies | None (no database server) |
+
+---
+
 ## ⚠️ Limitations
-- **Local-Only State**: Saved searches are stored in the browser's `localStorage` and are not synced. 
-- **No Authentication**: The application is designed to be run locally and single-tenant. There is no built-in auth or multi-user state.
+- **Local-Only State**: Saved searches are stored in the browser's `localStorage` and are not synced.
+- **No Authentication**: Designed for local, single-tenant use.
+- **Full Rebuild**: Adding a new quarter currently requires rebuilding the entire warehouse (~5-10 min).

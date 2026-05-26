@@ -25,8 +25,8 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 app = FastAPI(
     title="FAERS DB API",
-    version="0.1.0",
-    description="A small read-only API for querying local FAERS warehouse marts.",
+    version="0.2.0",
+    description="Read-only API for querying a local FAERS DuckDB+Parquet warehouse.",
 )
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -76,7 +76,7 @@ def aggregate_drug_reactions_endpoint(
 
 
 @app.get("/cases/{case_version_pk}", response_model=CaseDetailResponse)
-def case_detail_endpoint(case_version_pk: int):
+def case_detail_endpoint(case_version_pk: str):
     detail = get_case_detail(case_version_pk)
     if detail is None:
         raise HTTPException(status_code=404, detail="Case version not found")
