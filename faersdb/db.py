@@ -9,7 +9,24 @@ import duckdb
 from faersdb.config import settings
 
 # Table names that map to Parquet files in the warehouse directory.
-WAREHOUSE_TABLES = ("demo", "drug", "reac", "outc", "ther", "indi", "rpsr")
+RAW_WAREHOUSE_TABLES = ("demo", "drug", "reac", "outc", "ther", "indi", "rpsr")
+QUERY_WAREHOUSE_TABLES = (
+    "latest_demo",
+    "latest_drug",
+    "latest_reac",
+    "latest_outc",
+    "latest_ther",
+    "latest_indi",
+    "latest_rpsr",
+    "case_summary",
+    "filter_metadata",
+)
+WAREHOUSE_TABLES = (*RAW_WAREHOUSE_TABLES, *QUERY_WAREHOUSE_TABLES)
+REQUIRED_QUERY_TABLES = frozenset(QUERY_WAREHOUSE_TABLES)
+
+
+def _sql_string(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
 
 
 def _register_warehouse(conn: duckdb.DuckDBPyConnection, warehouse_dir: Path) -> None:
@@ -19,8 +36,18 @@ def _register_warehouse(conn: duckdb.DuckDBPyConnection, warehouse_dir: Path) ->
         if parquet_path.exists():
             conn.execute(
                 f"CREATE OR REPLACE VIEW {table_name} AS "
-                f"SELECT * FROM read_parquet('{parquet_path}')"
+                f"SELECT * FROM read_parquet({_sql_string(str(parquet_path))})"
             )
+
+
+def missing_query_tables(warehouse_dir: Path | None = None) -> list[str]:
+    """Return required derived query tables missing from the warehouse."""
+    root = warehouse_dir or settings.warehouse_path
+    return [
+        table_name
+        for table_name in QUERY_WAREHOUSE_TABLES
+        if not (root / f"{table_name}.parquet").exists()
+    ]
 
 
 def get_conn() -> duckdb.DuckDBPyConnection:

@@ -712,7 +712,8 @@ async function runCaseSearchWithOffset(offset, params) {
     savedSearchNameEl.value = savedSearchNameEl.value.trim();
 
     if (payload.items.length > 0) {
-      await loadCaseDetail(payload.items[0].case_version_pk);
+      caseDetailEl.innerHTML = '<p class="empty-state">Select a case from the table to inspect its linked drugs, reactions, outcomes, and metadata.</p>';
+      setStatus("Search complete.");
     } else {
       caseDetailEl.innerHTML = '<p class="empty-state">No case selected.</p>';
       setStatus("Search complete.");

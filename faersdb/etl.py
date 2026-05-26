@@ -303,6 +303,18 @@ TABLE_SPECS: dict[str, dict] = {
     },
 }
 
+QUERY_TABLES = (
+    "latest_demo",
+    "latest_drug",
+    "latest_reac",
+    "latest_outc",
+    "latest_ther",
+    "latest_indi",
+    "latest_rpsr",
+    "case_summary",
+    "filter_metadata",
+)
+
 # ─── Delete File Handling ─────────────────────────────────────────────────────
 
 
@@ -511,6 +523,383 @@ def apply_deletes(
     return marked
 
 
+def _copy_query_to_parquet(
+    con: duckdb.DuckDBPyConnection,
+    query: str,
+    output_path: Path,
+) -> int:
+    """Write a DuckDB query to Parquet atomically and return its row count."""
+    temp_output = output_path.with_name(f".{output_path.name}.tmp")
+    temp_output.unlink(missing_ok=True)
+    con.execute(
+        f"COPY ({query}) TO {_sql_string(str(temp_output))} "
+        "(FORMAT PARQUET, COMPRESSION SNAPPY)"
+    )
+    temp_output.replace(output_path)
+    return con.execute(
+        f"SELECT count(*)::int FROM read_parquet({_sql_string(str(output_path))})"
+    ).fetchone()[0]
+
+
+def _register_parquet_view(
+    con: duckdb.DuckDBPyConnection,
+    table_name: str,
+    parquet_path: Path,
+) -> None:
+    con.execute(
+        f"CREATE OR REPLACE VIEW {table_name} AS "
+        f"SELECT * FROM read_parquet({_sql_string(str(parquet_path))})"
+    )
+
+
+def _empty_latest_drug_query() -> str:
+    return """
+        SELECT
+            CAST(NULL AS VARCHAR) AS primaryid,
+            CAST(NULL AS VARCHAR) AS source_quarter,
+            CAST(NULL AS INTEGER) AS drug_seq,
+            CAST(NULL AS VARCHAR) AS role_cod,
+            CAST(NULL AS VARCHAR) AS drugname,
+            CAST(NULL AS VARCHAR) AS prod_ai,
+            CAST(NULL AS VARCHAR) AS route,
+            CAST(NULL AS VARCHAR) AS dose_vbm,
+            CAST(NULL AS DOUBLE) AS dose_amt,
+            CAST(NULL AS VARCHAR) AS dose_unit,
+            CAST(NULL AS DATE) AS start_dt,
+            CAST(NULL AS DATE) AS end_dt,
+            CAST(NULL AS VARCHAR) AS role_cod_search,
+            CAST(NULL AS VARCHAR) AS drugname_search,
+            CAST(NULL AS VARCHAR) AS prod_ai_search,
+            CAST(NULL AS VARCHAR) AS route_search,
+            CAST(NULL AS VARCHAR) AS dose_unit_search
+        WHERE false
+    """
+
+
+def _empty_latest_reac_query() -> str:
+    return """
+        SELECT
+            CAST(NULL AS VARCHAR) AS primaryid,
+            CAST(NULL AS VARCHAR) AS source_quarter,
+            CAST(NULL AS VARCHAR) AS pt,
+            CAST(NULL AS VARCHAR) AS drug_rec_act,
+            CAST(NULL AS VARCHAR) AS pt_search,
+            CAST(NULL AS VARCHAR) AS drug_rec_act_search
+        WHERE false
+    """
+
+
+def _empty_latest_outc_query() -> str:
+    return """
+        SELECT
+            CAST(NULL AS VARCHAR) AS primaryid,
+            CAST(NULL AS VARCHAR) AS source_quarter,
+            CAST(NULL AS VARCHAR) AS outc_cod,
+            CAST(NULL AS VARCHAR) AS outc_cod_search
+        WHERE false
+    """
+
+
+def _empty_latest_ther_query() -> str:
+    return """
+        SELECT
+            CAST(NULL AS VARCHAR) AS primaryid,
+            CAST(NULL AS VARCHAR) AS source_quarter,
+            CAST(NULL AS INTEGER) AS drug_seq,
+            CAST(NULL AS DATE) AS start_dt,
+            CAST(NULL AS DATE) AS end_dt,
+            CAST(NULL AS INTEGER) AS dur,
+            CAST(NULL AS VARCHAR) AS dur_cod,
+            CAST(NULL AS VARCHAR) AS dur_cod_search
+        WHERE false
+    """
+
+
+def _empty_latest_indi_query() -> str:
+    return """
+        SELECT
+            CAST(NULL AS VARCHAR) AS primaryid,
+            CAST(NULL AS VARCHAR) AS source_quarter,
+            CAST(NULL AS INTEGER) AS drug_seq,
+            CAST(NULL AS VARCHAR) AS indi_pt,
+            CAST(NULL AS VARCHAR) AS indi_pt_search
+        WHERE false
+    """
+
+
+def _empty_latest_rpsr_query() -> str:
+    return """
+        SELECT
+            CAST(NULL AS VARCHAR) AS primaryid,
+            CAST(NULL AS VARCHAR) AS source_quarter,
+            CAST(NULL AS VARCHAR) AS rpsr_cod,
+            CAST(NULL AS VARCHAR) AS rpsr_cod_search
+        WHERE false
+    """
+
+
+def build_query_tables(
+    warehouse_dir: Path,
+    *,
+    memory_limit: str = "2GB",
+    threads: int = 4,
+) -> dict[str, int]:
+    """Build query-optimized Parquet tables from the normalized warehouse."""
+    demo_path = warehouse_dir / "demo.parquet"
+    if not demo_path.exists():
+        typer.echo("  QUERY: demo.parquet not found; skipping derived tables")
+        return {}
+
+    t0 = time.perf_counter()
+    temp_dir = warehouse_dir / "_duckdb_tmp"
+    summary_temp_dir = warehouse_dir / "_build_tmp" / "query_summary"
+    shutil.rmtree(temp_dir, ignore_errors=True)
+    shutil.rmtree(summary_temp_dir, ignore_errors=True)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    summary_temp_dir.mkdir(parents=True, exist_ok=True)
+
+    con = duckdb.connect()
+    try:
+        con.execute(f"SET memory_limit={_sql_string(memory_limit)}")
+        con.execute(f"SET threads={max(1, threads)}")
+        con.execute(f"SET temp_directory={_sql_string(str(temp_dir))}")
+
+        for spec in TABLE_SPECS.values():
+            table_name = spec["output"].removesuffix(".parquet")
+            parquet_path = warehouse_dir / f"{table_name}.parquet"
+            if parquet_path.exists():
+                _register_parquet_view(con, table_name, parquet_path)
+
+        results: dict[str, int] = {}
+
+        typer.echo("  QUERY: building latest_demo.parquet...")
+        latest_demo_path = warehouse_dir / "latest_demo.parquet"
+        results["LATEST_DEMO"] = _copy_query_to_parquet(
+            con,
+            """
+                SELECT
+                    * EXCLUDE (_rn),
+                    upper(coalesce(report_type, '')) AS report_type_search,
+                    upper(coalesce(i_f_code, '')) AS i_f_code_search,
+                    upper(coalesce(sex, '')) AS sex_search,
+                    upper(coalesce(age_cod, '')) AS age_cod_search,
+                    upper(coalesce(age_grp, '')) AS age_grp_search,
+                    upper(coalesce(reporter_country, '')) AS reporter_country_search
+                FROM (
+                    SELECT *, ROW_NUMBER() OVER (
+                        PARTITION BY caseid
+                        ORDER BY
+                            caseversion DESC NULLS LAST,
+                            COALESCE(fda_dt, event_dt, mfr_dt) DESC NULLS LAST,
+                            source_quarter DESC,
+                            primaryid DESC
+                    ) AS _rn
+                    FROM demo
+                    WHERE NOT is_deleted
+                )
+                WHERE _rn = 1
+            """,
+            latest_demo_path,
+        )
+        _register_parquet_view(con, "latest_demo", latest_demo_path)
+
+        latest_specs = [
+            (
+                "drug",
+                "latest_drug",
+                """
+                    SELECT
+                        d.*,
+                        upper(coalesce(d.role_cod, '')) AS role_cod_search,
+                        upper(coalesce(d.drugname, '')) AS drugname_search,
+                        upper(coalesce(d.prod_ai, '')) AS prod_ai_search,
+                        upper(coalesce(d.route, '')) AS route_search,
+                        upper(coalesce(d.dose_unit, '')) AS dose_unit_search
+                    FROM drug d
+                    JOIN latest_demo ld ON ld.primaryid = d.primaryid
+                """,
+                _empty_latest_drug_query(),
+            ),
+            (
+                "reac",
+                "latest_reac",
+                """
+                    SELECT
+                        r.*,
+                        upper(coalesce(r.pt, '')) AS pt_search,
+                        upper(coalesce(r.drug_rec_act, '')) AS drug_rec_act_search
+                    FROM reac r
+                    JOIN latest_demo ld ON ld.primaryid = r.primaryid
+                """,
+                _empty_latest_reac_query(),
+            ),
+            (
+                "outc",
+                "latest_outc",
+                """
+                    SELECT
+                        o.*,
+                        upper(coalesce(o.outc_cod, '')) AS outc_cod_search
+                    FROM outc o
+                    JOIN latest_demo ld ON ld.primaryid = o.primaryid
+                """,
+                _empty_latest_outc_query(),
+            ),
+            (
+                "ther",
+                "latest_ther",
+                """
+                    SELECT
+                        th.*,
+                        upper(coalesce(th.dur_cod, '')) AS dur_cod_search
+                    FROM ther th
+                    JOIN latest_demo ld ON ld.primaryid = th.primaryid
+                """,
+                _empty_latest_ther_query(),
+            ),
+            (
+                "indi",
+                "latest_indi",
+                """
+                    SELECT
+                        i.*,
+                        upper(coalesce(i.indi_pt, '')) AS indi_pt_search
+                    FROM indi i
+                    JOIN latest_demo ld ON ld.primaryid = i.primaryid
+                """,
+                _empty_latest_indi_query(),
+            ),
+            (
+                "rpsr",
+                "latest_rpsr",
+                """
+                    SELECT
+                        rp.*,
+                        upper(coalesce(rp.rpsr_cod, '')) AS rpsr_cod_search
+                    FROM rpsr rp
+                    JOIN latest_demo ld ON ld.primaryid = rp.primaryid
+                """,
+                _empty_latest_rpsr_query(),
+            ),
+        ]
+
+        for raw_name, latest_name, query, empty_query in latest_specs:
+            typer.echo(f"  QUERY: building {latest_name}.parquet...")
+            output_path = warehouse_dir / f"{latest_name}.parquet"
+            source_query = query if (warehouse_dir / f"{raw_name}.parquet").exists() else empty_query
+            results[latest_name.upper()] = _copy_query_to_parquet(
+                con, source_query, output_path
+            )
+            _register_parquet_view(con, latest_name, output_path)
+
+        typer.echo("  QUERY: building case_summary.parquet...")
+        results["CASE_SUMMARY"] = _copy_query_to_parquet(
+            con,
+            """
+                SELECT
+                    ld.primaryid AS case_version_pk,
+                    ld.source_system || ':' || ld.caseid AS canonical_case_id,
+                    ld.caseid AS source_case_id,
+                    ld.primaryid AS source_report_id,
+                    ld.source_quarter,
+                    ld.source_system,
+                    ld.caseversion AS case_version_num,
+                    ld.report_type,
+                    ld.i_f_code AS initial_or_followup,
+                    ld.fda_dt,
+                    ld.event_dt,
+                    ld.mfr_dt,
+                    ld.sex AS sex_std,
+                    ld.age AS age_value,
+                    ld.age_cod AS age_unit,
+                    ld.age_grp AS age_group,
+                    ld.wt_kg AS weight_kg,
+                    ld.reporter_country,
+                    CAST([] AS VARCHAR[]) AS drugs,
+                    CAST([] AS VARCHAR[]) AS active_ingredients,
+                    CAST([] AS VARCHAR[]) AS role_codes,
+                    CAST([] AS VARCHAR[]) AS routes,
+                    CAST([] AS VARCHAR[]) AS indications,
+                    CAST([] AS VARCHAR[]) AS reactions,
+                    CAST([] AS VARCHAR[]) AS outcomes,
+                    CAST([] AS VARCHAR[]) AS reporter_types
+                FROM latest_demo ld
+            """,
+            warehouse_dir / "case_summary.parquet",
+        )
+
+        typer.echo("  QUERY: building filter_metadata.parquet...")
+        results["FILTER_METADATA"] = _copy_query_to_parquet(
+            con,
+            """
+                SELECT
+                    coalesce((SELECT list(source_quarter ORDER BY source_quarter)
+                        FROM (SELECT DISTINCT source_quarter FROM latest_demo
+                              WHERE source_quarter IS NOT NULL)), CAST([] AS VARCHAR[])) AS quarters,
+                    coalesce((SELECT list(report_type ORDER BY report_type)
+                        FROM (SELECT DISTINCT report_type FROM latest_demo
+                              WHERE report_type IS NOT NULL)), CAST([] AS VARCHAR[])) AS report_types,
+                    coalesce((SELECT list(i_f_code ORDER BY i_f_code)
+                        FROM (SELECT DISTINCT i_f_code FROM latest_demo
+                              WHERE i_f_code IS NOT NULL)), CAST([] AS VARCHAR[])) AS initial_or_followup_values,
+                    coalesce((SELECT list(sex ORDER BY sex)
+                        FROM (SELECT DISTINCT sex FROM latest_demo
+                              WHERE sex IS NOT NULL)), CAST([] AS VARCHAR[])) AS sex_values,
+                    coalesce((SELECT list(age_cod ORDER BY age_cod)
+                        FROM (SELECT DISTINCT age_cod FROM latest_demo
+                              WHERE age_cod IS NOT NULL)), CAST([] AS VARCHAR[])) AS age_units,
+                    coalesce((SELECT list(age_grp ORDER BY age_grp)
+                        FROM (SELECT DISTINCT age_grp FROM latest_demo
+                              WHERE age_grp IS NOT NULL)), CAST([] AS VARCHAR[])) AS age_groups,
+                    coalesce((SELECT list(reporter_country ORDER BY reporter_country)
+                        FROM (SELECT DISTINCT reporter_country FROM latest_demo
+                              WHERE reporter_country IS NOT NULL)), CAST([] AS VARCHAR[])) AS reporter_countries,
+                    coalesce((SELECT list(role_cod ORDER BY role_cod)
+                        FROM (SELECT DISTINCT role_cod FROM latest_drug
+                              WHERE role_cod IS NOT NULL)), CAST([] AS VARCHAR[])) AS role_codes,
+                    coalesce((SELECT list(route ORDER BY route)
+                        FROM (SELECT DISTINCT route FROM latest_drug
+                              WHERE route IS NOT NULL)), CAST([] AS VARCHAR[])) AS routes,
+                    coalesce((SELECT list(dose_unit ORDER BY dose_unit)
+                        FROM (SELECT DISTINCT dose_unit FROM latest_drug
+                              WHERE dose_unit IS NOT NULL)), CAST([] AS VARCHAR[])) AS dose_units,
+                    coalesce((SELECT list(drug_rec_act ORDER BY drug_rec_act)
+                        FROM (SELECT DISTINCT drug_rec_act FROM latest_reac
+                              WHERE drug_rec_act IS NOT NULL)), CAST([] AS VARCHAR[])) AS reaction_outcomes,
+                    coalesce((SELECT list(outc_cod ORDER BY outc_cod)
+                        FROM (SELECT DISTINCT outc_cod FROM latest_outc
+                              WHERE outc_cod IS NOT NULL)), CAST([] AS VARCHAR[])) AS case_outcomes,
+                    coalesce((SELECT list(rpsr_cod ORDER BY rpsr_cod)
+                        FROM (SELECT DISTINCT rpsr_cod FROM latest_rpsr
+                              WHERE rpsr_cod IS NOT NULL)), CAST([] AS VARCHAR[])) AS reporter_types,
+                    coalesce((SELECT list(dur_cod ORDER BY dur_cod)
+                        FROM (SELECT DISTINCT dur_cod FROM latest_ther
+                              WHERE dur_cod IS NOT NULL)), CAST([] AS VARCHAR[])) AS dur_codes
+            """,
+            warehouse_dir / "filter_metadata.parquet",
+        )
+
+    finally:
+        con.close()
+        shutil.rmtree(summary_temp_dir, ignore_errors=True)
+        try:
+            summary_temp_dir.parent.rmdir()
+        except OSError:
+            pass
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    total_size_mb = sum(
+        (warehouse_dir / f"{name}.parquet").stat().st_size
+        for name in QUERY_TABLES
+        if (warehouse_dir / f"{name}.parquet").exists()
+    ) / 1024 / 1024
+    typer.echo(
+        f"  QUERY: built {len(results)} derived tables "
+        f"({total_size_mb:.1f} MB) in {_fmt(time.perf_counter() - t0)}"
+    )
+    return results
+
+
 def build_warehouse(
     data_root: Path,
     warehouse_dir: Path,
@@ -558,6 +947,14 @@ def build_warehouse(
     # Apply deletes
     results["DELETE"] = apply_deletes(quarters, data_root, warehouse_dir)
 
+    results.update(
+        build_query_tables(
+            warehouse_dir,
+            memory_limit=memory_limit,
+            threads=threads,
+        )
+    )
+
     total_rows = sum(results.values())
     total_size_mb = sum(
         f.stat().st_size
@@ -576,8 +973,15 @@ def build_warehouse(
 def warehouse_info(warehouse_dir: Path) -> dict[str, dict]:
     """Return stats about each Parquet file in the warehouse."""
     info: dict[str, dict] = {}
-    for table_name in list(TABLE_SPECS.keys()) + ["DELETE"]:
-        fname = f"{table_name.lower()}.parquet"
+    raw_tables = [
+        (table_name, spec["output"])
+        for table_name, spec in TABLE_SPECS.items()
+    ]
+    query_tables = [
+        (table_name.upper(), f"{table_name}.parquet")
+        for table_name in QUERY_TABLES
+    ]
+    for table_name, fname in [*raw_tables, *query_tables]:
         fpath = warehouse_dir / fname
         if fpath.exists():
             try:

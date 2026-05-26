@@ -15,6 +15,7 @@ from faersdb.api_models import (
     HealthResponse,
 )
 from faersdb.queries import (
+    QueryWarehouseError,
     aggregate_drug_reactions,
     get_case_detail,
     get_filter_metadata,
@@ -54,7 +55,10 @@ def health():
 
 @app.get("/filters/metadata", response_model=FilterMetadataResponse)
 def filter_metadata_endpoint():
-    return FilterMetadataResponse.model_validate(get_filter_metadata())
+    try:
+        return FilterMetadataResponse.model_validate(get_filter_metadata())
+    except QueryWarehouseError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/cases/search", response_model=CaseSearchResponse)
@@ -62,7 +66,10 @@ def search_cases_endpoint(params: Annotated[CaseSearchParams, Depends()]):
     errors = params.validation_errors()
     if errors:
         raise HTTPException(status_code=422, detail=errors)
-    return CaseSearchResponse.model_validate(search_cases(params))
+    try:
+        return CaseSearchResponse.model_validate(search_cases(params))
+    except QueryWarehouseError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/aggregates/drug-reactions", response_model=DrugReactionAggregateResponse)
@@ -72,12 +79,20 @@ def aggregate_drug_reactions_endpoint(
     errors = params.validation_errors()
     if errors:
         raise HTTPException(status_code=422, detail=errors)
-    return DrugReactionAggregateResponse.model_validate(aggregate_drug_reactions(params))
+    try:
+        return DrugReactionAggregateResponse.model_validate(
+            aggregate_drug_reactions(params)
+        )
+    except QueryWarehouseError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/cases/{case_version_pk}", response_model=CaseDetailResponse)
 def case_detail_endpoint(case_version_pk: str):
-    detail = get_case_detail(case_version_pk)
+    try:
+        detail = get_case_detail(case_version_pk)
+    except QueryWarehouseError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     if detail is None:
         raise HTTPException(status_code=404, detail="Case version not found")
     return CaseDetailResponse.model_validate(detail)

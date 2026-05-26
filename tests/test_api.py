@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from faersdb.api import app
 from faersdb.config import settings
+from faersdb.etl import build_query_tables
 
 client = TestClient(app)
 
@@ -125,6 +126,8 @@ def sample_warehouse(tmp_path, monkeypatch):
         }
     ).write_parquet(warehouse / "rpsr.parquet")
 
+    build_query_tables(warehouse, memory_limit="256MB", threads=1)
+
 
 def test_root():
     response = client.get("/")
@@ -190,6 +193,16 @@ def test_search_cases_with_drug():
         assert "outcomes" in item
         assert isinstance(item["drugs"], list)
         assert isinstance(item["reactions"], list)
+
+
+def test_search_cases_with_drug_and_reaction():
+    response = client.get("/cases/search?drug_name=aspirin&reaction_pt=headache&limit=3")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert data["items"][0]["case_version_pk"] == "1001"
+    assert data["items"][0]["drugs"] == ["ASPIRIN"]
+    assert data["items"][0]["reactions"] == ["HEADACHE"]
 
 
 def test_search_cases_pagination():
@@ -264,3 +277,39 @@ def test_search_with_date_filters():
         "&event_dt_from=2024-01-01&event_dt_to=2024-12-31&limit=3"
     )
     assert response.status_code == 200
+
+
+def test_missing_query_tables_return_rebuild_message(tmp_path, monkeypatch):
+    warehouse = tmp_path / "missing-derived-warehouse"
+    warehouse.mkdir()
+    monkeypatch.setattr(settings, "warehouse_dir", str(warehouse))
+
+    pl.DataFrame(
+        {
+            "primaryid": ["1001"],
+            "caseid": ["2001"],
+            "source_quarter": ["2024q1"],
+            "source_system": ["FAERS"],
+            "caseversion": [1],
+            "report_type": ["EXP"],
+            "i_f_code": ["I"],
+            "event_dt": [date(2024, 1, 10)],
+            "mfr_dt": [date(2024, 1, 11)],
+            "fda_dt": [date(2024, 1, 15)],
+            "age": [45.0],
+            "age_cod": ["YR"],
+            "age_grp": ["A"],
+            "sex": ["M"],
+            "wt_kg": [80.0],
+            "reporter_country": ["US"],
+            "auth_num": [None],
+            "lit_ref": [None],
+            "is_deleted": [False],
+        }
+    ).write_parquet(warehouse / "demo.parquet")
+
+    response = client.get("/cases/search?drug_name=aspirin")
+
+    assert response.status_code == 503
+    assert "Query-optimized warehouse tables are missing" in response.json()["detail"]
+    assert "uv run python -m faersdb build" in response.json()["detail"]

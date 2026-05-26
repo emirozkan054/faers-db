@@ -1,5 +1,7 @@
 """Tests for the ETL pipeline."""
 
+from datetime import date
+
 import polars as pl
 import pytest
 
@@ -7,6 +9,7 @@ from faersdb.etl import (
     _process_demo,
     _process_drug,
     _read_ascii_file,
+    build_query_tables,
     build_warehouse,
 )
 
@@ -113,3 +116,133 @@ def test_build_warehouse_uses_shards_and_deduplicates(tmp_path):
     demo = pl.read_parquet(warehouse_dir / "demo.parquet").sort("primaryid")
     assert demo["primaryid"].to_list() == ["100001", "100002"]
     assert "is_deleted" in demo.columns
+    assert (warehouse_dir / "latest_demo.parquet").exists()
+    assert (warehouse_dir / "case_summary.parquet").exists()
+
+
+def test_build_query_tables_keeps_latest_non_deleted_cases(tmp_path):
+    warehouse = tmp_path / "warehouse"
+    warehouse.mkdir()
+
+    pl.DataFrame(
+        {
+            "primaryid": ["1001", "1002", "1003", "1004"],
+            "caseid": ["2001", "2001", "2002", "2003"],
+            "source_quarter": ["2024q1", "2024q2", "2024q2", "2024q3"],
+            "source_system": ["FAERS", "FAERS", "FAERS", "FAERS"],
+            "caseversion": [1, 2, 1, 1],
+            "report_type": ["EXP", "DIR", "PER", "EXP"],
+            "i_f_code": ["I", "F", "I", "F"],
+            "event_dt": [
+                date(2024, 1, 10),
+                date(2024, 2, 10),
+                date(2024, 3, 10),
+                date(2024, 4, 10),
+            ],
+            "mfr_dt": [
+                date(2024, 1, 11),
+                date(2024, 2, 11),
+                date(2024, 3, 11),
+                date(2024, 4, 11),
+            ],
+            "fda_dt": [
+                date(2024, 1, 15),
+                date(2024, 2, 15),
+                date(2024, 3, 15),
+                date(2024, 4, 15),
+            ],
+            "age": [45.0, 46.0, 60.0, 52.0],
+            "age_cod": ["YR", "YR", "YR", "YR"],
+            "age_grp": ["A", "A", "E", "A"],
+            "sex": ["M", "M", "F", "F"],
+            "wt_kg": [80.0, 82.0, 70.0, 65.0],
+            "reporter_country": ["US", "US", "US", "US"],
+            "auth_num": [None, None, None, None],
+            "lit_ref": [None, None, None, None],
+            "is_deleted": [False, False, True, False],
+        }
+    ).write_parquet(warehouse / "demo.parquet")
+
+    pl.DataFrame(
+        {
+            "primaryid": ["1001", "1002", "1003", "1004"],
+            "source_quarter": ["2024q1", "2024q2", "2024q2", "2024q3"],
+            "drug_seq": [1, 1, 1, 1],
+            "role_cod": ["PS", "PS", "PS", "SS"],
+            "drugname": ["OLD ASPIRIN", "Aspirin", "DELETED DRUG", "IBUPROFEN"],
+            "prod_ai": ["OLD", "acetylsalicylic acid", "DELETED", "IBUPROFEN"],
+            "route": ["ORAL", "ORAL", "ORAL", "ORAL"],
+            "dose_vbm": [None, None, None, None],
+            "dose_amt": [100.0, 81.0, 500.0, 200.0],
+            "dose_unit": ["MG", "MG", "MG", "MG"],
+            "start_dt": [
+                date(2024, 1, 1),
+                date(2024, 2, 1),
+                date(2024, 3, 1),
+                date(2024, 4, 1),
+            ],
+            "end_dt": [None, None, None, None],
+        }
+    ).write_parquet(warehouse / "drug.parquet")
+
+    pl.DataFrame(
+        {
+            "primaryid": ["1001", "1002", "1003", "1004"],
+            "source_quarter": ["2024q1", "2024q2", "2024q2", "2024q3"],
+            "pt": ["OLD REACTION", "Headache", "DELETED", "RASH"],
+            "drug_rec_act": ["UNK", "UNK", "UNK", "UNK"],
+        }
+    ).write_parquet(warehouse / "reac.parquet")
+
+    pl.DataFrame(
+        {
+            "primaryid": ["1002"],
+            "source_quarter": ["2024q2"],
+            "outc_cod": ["HO"],
+        }
+    ).write_parquet(warehouse / "outc.parquet")
+    pl.DataFrame(
+        {
+            "primaryid": ["1002"],
+            "source_quarter": ["2024q2"],
+            "drug_seq": [1],
+            "indi_pt": ["Pain"],
+        }
+    ).write_parquet(warehouse / "indi.parquet")
+    pl.DataFrame(
+        {
+            "primaryid": ["1002"],
+            "source_quarter": ["2024q2"],
+            "drug_seq": [1],
+            "start_dt": [date(2024, 2, 1)],
+            "end_dt": [None],
+            "dur": [5],
+            "dur_cod": ["DY"],
+        }
+    ).write_parquet(warehouse / "ther.parquet")
+    pl.DataFrame(
+        {
+            "primaryid": ["1002"],
+            "source_quarter": ["2024q2"],
+            "rpsr_cod": ["HP"],
+        }
+    ).write_parquet(warehouse / "rpsr.parquet")
+
+    results = build_query_tables(warehouse, memory_limit="256MB", threads=1)
+
+    assert results["LATEST_DEMO"] == 2
+    latest_demo = pl.read_parquet(warehouse / "latest_demo.parquet").sort("primaryid")
+    assert latest_demo["primaryid"].to_list() == ["1002", "1004"]
+    assert latest_demo["caseversion"].to_list() == [2, 1]
+
+    latest_drug = pl.read_parquet(warehouse / "latest_drug.parquet").sort("primaryid")
+    assert latest_drug["primaryid"].to_list() == ["1002", "1004"]
+    assert latest_drug["drugname_search"].to_list() == ["ASPIRIN", "IBUPROFEN"]
+
+    summary = pl.read_parquet(warehouse / "case_summary.parquet")
+    aspirin_summary = summary.filter(pl.col("case_version_pk") == "1002").row(
+        0, named=True
+    )
+    assert aspirin_summary["canonical_case_id"] == "FAERS:2001"
+    assert aspirin_summary["drugs"] == []
+    assert aspirin_summary["reactions"] == []

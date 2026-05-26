@@ -49,3 +49,4 @@ def test_static_app_javascript_is_served():
     assert "window.location.search" in response.text
     assert "saveCurrentSearch" in response.text
     assert "hydrateFromUrl" in response.text
+    assert "await loadCaseDetail(payload.items[0].case_version_pk)" not in response.text
