@@ -272,6 +272,56 @@ def _source_case_expr(table: LoadedTempTable) -> str:
     return first_present_expr(table, ("CASE_ID", "CASEID", "CASE"))
 
 
+DEMO_NORM_DDL = """
+CREATE TEMP TABLE _tmp_demo_norm (
+    source_quarter text,
+    source_system text,
+    schema_era text,
+    source_case_id text,
+    source_report_id text,
+    case_version_num int,
+    report_type text,
+    initial_or_followup text,
+    event_dt date,
+    mfr_dt date,
+    fda_dt date,
+    age_value numeric,
+    age_unit text,
+    age_group text,
+    sex_std text,
+    weight_kg numeric,
+    reporter_country text,
+    auth_num text,
+    lit_ref text
+) ON COMMIT DROP
+"""
+
+
+def _create_demo_norm_table(cur):
+    cur.execute("DROP TABLE IF EXISTS _tmp_demo_norm")
+    cur.execute(DEMO_NORM_DDL)
+
+
+def _copy_demo_file_to_norm(
+    cur,
+    file_path: Path,
+    meta: dict,
+    *,
+    copy_chunk_mb: int,
+) -> int:
+    cur.execute("TRUNCATE _tmp_demo_norm")
+    table = copy_ascii_file_to_temp(
+        cur,
+        file_path,
+        "_tmp_demo_raw",
+        copy_chunk_mb=copy_chunk_mb,
+    )
+    if table.rows_loaded:
+        _insert_demo_norm(cur, table, meta)
+    cur.execute("DROP TABLE IF EXISTS _tmp_demo_raw")
+    return table.rows_loaded
+
+
 def _load_all_demo(
     conn,
     quarter_work: list[tuple[dict, list[tuple[str, Path]]]],
@@ -286,30 +336,16 @@ def _load_all_demo(
         _configure_session(cur, work_mem)
         cur.execute(
             """
-            CREATE TEMP TABLE _tmp_demo_norm (
+            CREATE TEMP TABLE _tmp_case_master_keys (
                 source_quarter text,
                 source_system text,
-                schema_era text,
-                source_case_id text,
-                source_report_id text,
-                case_version_num int,
-                report_type text,
-                initial_or_followup text,
-                event_dt date,
-                mfr_dt date,
-                fda_dt date,
-                age_value numeric,
-                age_unit text,
-                age_group text,
-                sex_std text,
-                weight_kg numeric,
-                reporter_country text,
-                auth_num text,
-                lit_ref text
+                source_case_id text
             ) ON COMMIT DROP
             """
         )
+        _create_demo_norm_table(cur)
 
+        typer.echo("[backfill] DEMO pass 1/2: collecting case keys")
         for quarter_info, files in quarter_work:
             meta = {
                 "source_quarter": quarter_info["source_quarter"],
@@ -318,18 +354,45 @@ def _load_all_demo(
             }
             demo_files = [path for kind, path in files if kind == "DEMO"]
             for file_path in demo_files:
-                table = copy_ascii_file_to_temp(
-                    cur,
-                    file_path,
-                    "_tmp_demo_raw",
+                file_start = time.perf_counter()
+                typer.echo(
+                    f"  [{meta['source_quarter']}] DEMO keys loading {file_path.name}"
+                )
+                rows_loaded = _copy_demo_file_to_norm(
+                    cur=cur,
+                    file_path=file_path,
+                    meta=meta,
                     copy_chunk_mb=copy_chunk_mb,
                 )
-                if table.rows_loaded == 0:
+                if rows_loaded == 0:
+                    typer.echo(
+                        f"  [{meta['source_quarter']}] DEMO {file_path.name}: 0 rows"
+                    )
                     continue
-                total += table.rows_loaded
-                _insert_demo_norm(cur, table, meta)
+                total += rows_loaded
+                cur.execute(
+                    """
+                    INSERT INTO _tmp_case_master_keys (
+                        source_quarter,
+                        source_system,
+                        source_case_id
+                    )
+                    SELECT DISTINCT
+                        source_quarter,
+                        source_system,
+                        source_case_id
+                    FROM _tmp_demo_norm
+                    WHERE source_case_id IS NOT NULL
+                      AND source_report_id IS NOT NULL
+                    """
+                )
+                typer.echo(
+                    f"  [{meta['source_quarter']}] DEMO keys {file_path.name}: "
+                    f"{rows_loaded} source rows in "
+                    f"{_fmt(time.perf_counter() - file_start)}"
+                )
 
-        cur.execute("ANALYZE _tmp_demo_norm")
+        cur.execute("ANALYZE _tmp_case_master_keys")
         cur.execute(
             """
             INSERT INTO core.case_master (
@@ -345,9 +408,8 @@ def _load_all_demo(
                 source_system,
                 MIN(source_quarter),
                 MAX(source_quarter)
-            FROM _tmp_demo_norm
+            FROM _tmp_case_master_keys
             WHERE source_case_id IS NOT NULL
-              AND source_report_id IS NOT NULL
             GROUP BY source_system, source_case_id
             ORDER BY 1
             """
@@ -358,8 +420,46 @@ def _load_all_demo(
             ON core.case_master (canonical_case_id)
             """
         )
-        cur.execute(
-            """
+
+        typer.echo("[backfill] DEMO pass 2/2: loading case versions")
+        for quarter_info, files in quarter_work:
+            meta = {
+                "source_quarter": quarter_info["source_quarter"],
+                "source_system": quarter_info["source_system"],
+                "schema_era": quarter_info["schema_era"],
+            }
+            demo_files = [path for kind, path in files if kind == "DEMO"]
+            for file_path in demo_files:
+                file_start = time.perf_counter()
+                typer.echo(
+                    f"  [{meta['source_quarter']}] DEMO versions loading {file_path.name}"
+                )
+                rows_loaded = _copy_demo_file_to_norm(
+                    cur=cur,
+                    file_path=file_path,
+                    meta=meta,
+                    copy_chunk_mb=copy_chunk_mb,
+                )
+                if rows_loaded == 0:
+                    typer.echo(
+                        f"  [{meta['source_quarter']}] DEMO versions {file_path.name}: 0 rows"
+                    )
+                    continue
+                _insert_case_versions_from_demo_norm(cur)
+                typer.echo(
+                    f"  [{meta['source_quarter']}] DEMO versions {file_path.name}: "
+                    f"{rows_loaded} source rows in "
+                    f"{_fmt(time.perf_counter() - file_start)}"
+                )
+
+    conn.commit()
+    typer.echo(f"[backfill] DEMO {total} source rows in {_fmt(time.perf_counter() - t0)}")
+    return total
+
+
+def _insert_case_versions_from_demo_norm(cur):
+    cur.execute(
+        """
             INSERT INTO core.case_version (
                 case_pk,
                 source_quarter,
@@ -418,12 +518,8 @@ def _load_all_demo(
             JOIN core.case_master cm
               ON cm.canonical_case_id = d.source_system || ':' || d.source_case_id
             ORDER BY d.source_system, d.source_report_id, d.source_quarter
-            """
-        )
-
-    conn.commit()
-    typer.echo(f"[backfill] DEMO {total} source rows in {_fmt(time.perf_counter() - t0)}")
-    return total
+        """
+    )
 
 
 def load_all_demo(
