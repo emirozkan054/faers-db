@@ -9,14 +9,11 @@ from faersdb.api_models import (
     CaseDetailResponse,
     CaseSearchParams,
     CaseSearchResponse,
-    DrugReactionAggregateParams,
-    DrugReactionAggregateResponse,
     FilterMetadataResponse,
     HealthResponse,
 )
 from faersdb.queries import (
     QueryWarehouseError,
-    aggregate_drug_reactions,
     get_case_detail,
     get_filter_metadata,
     search_cases,
@@ -68,21 +65,6 @@ def search_cases_endpoint(params: Annotated[CaseSearchParams, Depends()]):
         raise HTTPException(status_code=422, detail=errors)
     try:
         return CaseSearchResponse.model_validate(search_cases(params))
-    except QueryWarehouseError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-
-@app.get("/aggregates/drug-reactions", response_model=DrugReactionAggregateResponse)
-def aggregate_drug_reactions_endpoint(
-    params: Annotated[DrugReactionAggregateParams, Depends()]
-):
-    errors = params.validation_errors()
-    if errors:
-        raise HTTPException(status_code=422, detail=errors)
-    try:
-        return DrugReactionAggregateResponse.model_validate(
-            aggregate_drug_reactions(params)
-        )
     except QueryWarehouseError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

@@ -2,7 +2,7 @@
 
 A local-first FAERS (FDA Adverse Event Reporting System) warehouse and query API designed for research workflows.
 
-This project provides an ETL pipeline to load FAERS quarterly ASCII data into compressed Parquet files, queried in-process by DuckDB. It includes a read-only HTTP API and a lightweight web UI to browse cases and aggregate statistics.
+This project provides an ETL pipeline to load FAERS quarterly ASCII data into compressed Parquet files, queried in-process by DuckDB. It includes a read-only HTTP API and a lightweight web UI to browse cases.
 
 **No external database required** — everything runs from local files.
 
@@ -119,7 +119,6 @@ The local UI (`http://127.0.0.1:8000/app`) provides a faceted search interface o
 
 ### Features
 - **Faceted Search**: Filter by demographics, drug name, reaction, indication, case outcomes, event dates, and more.
-- **Aggregate Views**: See grouped drug-reaction counts across your selected filters.
 - **Case Details**: Open specific cases to see all linked drugs, outcomes, and reactions.
 - **Sharable Links**: Active search parameters are synced to the URL.
 - **Saved Searches**: Save your frequent queries locally in your browser.
@@ -133,9 +132,68 @@ curl "http://127.0.0.1:8000/cases/search?drug_name=aspirin"
 # Filter by drug, route, and case outcome
 curl "http://127.0.0.1:8000/cases/search?drug_name=aspirin&route=ORAL&case_outcome=HO"
 
-# Get aggregate drug-reaction counts
-curl "http://127.0.0.1:8000/aggregates/drug-reactions?drug_name=aspirin"
+# Search with multiple primary terms
+curl --get "http://127.0.0.1:8000/cases/search" \
+  --data-urlencode 'primary_terms=[{"prod_ai":"ibuprofen"},{"drug_name":"aspirin","indication_pt":"pain"}]' \
+  --data-urlencode "primary_term_mode=any"
 ```
+
+---
+
+## FAERS Field And Code Glossary
+
+### Core fields
+- `PROD_AI`: Product active ingredient in the DRUG file, when available.
+- `EVENT_DT`: Date the adverse event occurred or began, when reported.
+- `FDA_DT`: FDA received date for the case/version in the extract.
+- `DRUG_SEQ`: Drug row identifier within a case.
+- `INDI_DRUG_SEQ`: Indication-to-drug link. Indications should be joined to drugs by `PRIMARYID + DRUG_SEQ`.
+- `DRUG_REC_ACT`: Drug recur action. This is reaction/event information that reappeared after rechallenge, not a general reaction outcome field, so the UI does not expose it as "reaction outcome."
+
+### Age groups
+| Code | Meaning |
+|---|---|
+| `N` | Neonate |
+| `I` | Infant |
+| `C` | Child |
+| `T` | Adolescent |
+| `A` | Adult |
+| `E` | Elderly |
+
+### Drug role codes
+| Code | Meaning |
+|---|---|
+| `PS` | Primary suspect |
+| `SS` | Secondary suspect |
+| `C` | Concomitant |
+| `I` | Interacting |
+| `DN` | Drug not administered |
+
+### Case outcome codes
+| Code | Meaning |
+|---|---|
+| `DE` | Death |
+| `LT` | Life-threatening |
+| `HO` | Hospitalization |
+| `DS` | Disability |
+| `CA` | Congenital anomaly |
+| `RI` | Required intervention |
+| `OT` | Other serious outcome |
+
+### Reporter/source codes
+| Code | Meaning |
+|---|---|
+| `FGN` | Foreign |
+| `SDY` | Study |
+| `LIT` | Literature |
+| `CSM` | Consumer |
+| `HP` | Health professional |
+| `UF` | User facility |
+| `CR` | Company representative |
+| `DT` | Distributor |
+| `OTH` | Other |
+
+`ROUTE` is reported route text, such as oral, intravenous, or subcutaneous. It is not a single fixed abbreviation list.
 
 ---
 

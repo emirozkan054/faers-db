@@ -115,6 +115,37 @@
       padding: 0 14px 14px;
     }
 
+    .term-controls {
+      display: flex;
+      justify-content: space-between;
+      align-items: end;
+      gap: 12px;
+      flex-wrap: wrap;
+      padding: 0 14px 12px;
+    }
+
+    .term-mode {
+      min-width: 180px;
+      max-width: 240px;
+    }
+
+    .term-list {
+      display: grid;
+      gap: 10px;
+      padding: 0 14px 14px;
+    }
+
+    .term-row {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+      gap: 10px;
+      align-items: end;
+      padding: 10px;
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      border-radius: 12px;
+      background: rgba(15, 23, 42, 0.42);
+    }
+
     label {
       display: flex;
       flex-direction: column;
@@ -300,6 +331,10 @@
       .filter-group {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
+
+      .term-row {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
     }
 
     @media (max-width: 640px) {
@@ -308,6 +343,10 @@
       }
 
       .filter-group {
+        grid-template-columns: 1fr;
+      }
+
+      .term-row {
         grid-template-columns: 1fr;
       }
 
@@ -336,32 +375,24 @@
           <h2>Faceted Search</h2>
           <div class="actions">
             <button id="search-cases" type="submit" form="search-form">Search Cases</button>
-            <button id="search-aggregates" type="button" class="secondary">Show Aggregates</button>
             <button id="clear-filters" type="button" class="secondary">Clear</button>
           </div>
         </div>
-        <p class="small-note">Provide at least one filter. Search results stay paginated and aggregate views stay exportable for laptop-sized workflows.</p>
+        <p class="small-note">Provide at least one filter. Search results stay paginated and exportable for laptop-sized workflows.</p>
         <form id="search-form" class="filter-stack">
           <details open>
             <summary>Primary Terms</summary>
-            <div class="filter-group">
-              <label>
-                Drug name
-                <input id="drug-name" name="drug_name" placeholder="aspirin">
+            <div class="term-controls">
+              <label class="term-mode">
+                Match terms
+                <select id="primary-term-mode" name="primary_term_mode">
+                  <option value="any">Any term</option>
+                  <option value="all">All terms</option>
+                </select>
               </label>
-              <label>
-                Active ingredient
-                <input id="prod-ai" name="prod_ai" placeholder="ibuprofen">
-              </label>
-              <label>
-                Reaction
-                <input id="reaction-pt" name="reaction_pt" placeholder="headache">
-              </label>
-              <label>
-                Indication
-                <input id="indication-pt" name="indication_pt" placeholder="pain">
-              </label>
+              <button id="add-primary-term" type="button" class="secondary">Add Term</button>
             </div>
+            <div id="primary-terms" class="term-list"></div>
           </details>
 
           <details open>
@@ -378,10 +409,6 @@
               <label>
                 Initial / follow-up
                 <select id="initial-or-followup" name="initial_or_followup"></select>
-              </label>
-              <label>
-                Limit
-                <input id="limit" name="limit" type="number" min="1" max="100" value="25">
               </label>
               <label>
                 Event date from
@@ -454,10 +481,6 @@
             <summary>Outcomes And Reporter</summary>
             <div class="filter-group">
               <label>
-                Reaction outcome
-                <select id="reaction-outcome" name="reaction_outcome"></select>
-              </label>
-              <label>
                 Case outcome
                 <select id="case-outcome" name="case_outcome"></select>
               </label>
@@ -487,18 +510,6 @@
           <div id="case-pager" class="pager"></div>
         </div>
 
-        <div class="section">
-          <div class="toolbar">
-            <h3>Drug-Reaction Aggregates</h3>
-            <div class="actions">
-              <button id="export-aggregates" type="button" class="secondary">Export Aggregates CSV</button>
-              <button id="export-aggregate-report" type="button" class="secondary">Export Aggregate Report JSON</button>
-            </div>
-          </div>
-          <div id="aggregate-summary" class="hint">No aggregate search has been run yet.</div>
-          <div id="aggregate-filter-summary" class="summary-bar"></div>
-          <div id="aggregate-results"></div>
-        </div>
       </section>
 
       <aside class="panel">

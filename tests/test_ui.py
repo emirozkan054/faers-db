@@ -21,8 +21,12 @@ def test_app_shell_is_served():
     assert '/static/app.js' in response.text
     assert "Export Cases CSV" in response.text
     assert "Export Case Report JSON" in response.text
-    assert "Export Aggregates CSV" in response.text
-    assert "Export Aggregate Report JSON" in response.text
+    assert "Export Aggregates CSV" not in response.text
+    assert "Export Aggregate Report JSON" not in response.text
+    assert "Show Aggregates" not in response.text
+    assert "Match terms" in response.text
+    assert "Add Term" in response.text
+    assert "Reaction outcome" not in response.text
     assert "Case And Time" in response.text
     assert "Outcomes And Reporter" in response.text
     assert "Saved Searches" in response.text
@@ -38,7 +42,10 @@ def test_static_app_javascript_is_served():
     assert response.status_code == 200
     assert "runCaseSearch" in response.text
     assert "/cases/search" in response.text
-    assert "/aggregates/drug-reactions" in response.text
+    assert "/aggregates/drug-reactions" not in response.text
+    assert "primary_terms" in response.text
+    assert "Active ingredients" in response.text
+    assert "reaction_outcome" not in response.text
     assert "downloadCsv" in response.text
     assert "downloadJson" in response.text
     assert "clearFilters" in response.text

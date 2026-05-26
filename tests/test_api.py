@@ -1,5 +1,6 @@
 """Tests for the API endpoints using the DuckDB+Parquet backend."""
 
+import json
 from datetime import date
 
 import polars as pl
@@ -60,23 +61,30 @@ def sample_warehouse(tmp_path, monkeypatch):
 
     pl.DataFrame(
         {
-            "primaryid": ["1001", "1002", "1003", "1004"],
-            "source_quarter": ["2024q1", "2024q2", "2024q2", "2024q3"],
-            "drug_seq": [1, 1, 1, 1],
-            "role_cod": ["PS", "PS", "SS", "PS"],
-            "drugname": ["ASPIRIN", "ASPIRIN", "IBUPROFEN", "ASPIRIN"],
-            "prod_ai": ["ACETYLSALICYLIC ACID", "ASPIRIN", "IBUPROFEN", "ASPIRIN"],
-            "route": ["ORAL", "ORAL", "ORAL", "ORAL"],
-            "dose_vbm": [None, None, None, None],
-            "dose_amt": [100.0, 81.0, 200.0, 325.0],
-            "dose_unit": ["MG", "MG", "MG", "MG"],
+            "primaryid": ["1001", "1002", "1003", "1004", "1004"],
+            "source_quarter": ["2024q1", "2024q2", "2024q2", "2024q3", "2024q3"],
+            "drug_seq": [1, 1, 1, 1, 2],
+            "role_cod": ["PS", "PS", "SS", "PS", "C"],
+            "drugname": ["ASPIRIN", "ASPIRIN", "IBUPROFEN", "ASPIRIN", "CODEINE"],
+            "prod_ai": [
+                "ACETYLSALICYLIC ACID",
+                "ASPIRIN",
+                "IBUPROFEN",
+                "ASPIRIN",
+                "CODEINE",
+            ],
+            "route": ["ORAL", "ORAL", "ORAL", "ORAL", "ORAL"],
+            "dose_vbm": [None, None, None, None, None],
+            "dose_amt": [100.0, 81.0, 200.0, 325.0, 30.0],
+            "dose_unit": ["MG", "MG", "MG", "MG", "MG"],
             "start_dt": [
                 date(2024, 1, 1),
                 date(2024, 2, 1),
                 date(2024, 3, 1),
                 date(2024, 4, 1),
+                date(2024, 4, 2),
             ],
-            "end_dt": [None, None, None, None],
+            "end_dt": [None, None, None, None, None],
         }
     ).write_parquet(warehouse / "drug.parquet")
 
@@ -99,22 +107,27 @@ def sample_warehouse(tmp_path, monkeypatch):
 
     pl.DataFrame(
         {
-            "primaryid": ["1001", "1002", "1004"],
-            "source_quarter": ["2024q1", "2024q2", "2024q3"],
-            "drug_seq": [1, 1, 1],
-            "indi_pt": ["PAIN", "FEVER", "PAIN"],
+            "primaryid": ["1001", "1002", "1004", "1004"],
+            "source_quarter": ["2024q1", "2024q2", "2024q3", "2024q3"],
+            "drug_seq": [1, 1, 1, 2],
+            "indi_pt": ["PAIN", "FEVER", "PRODUCT USED FOR UNKNOWN INDICATION", "PAIN"],
         }
     ).write_parquet(warehouse / "indi.parquet")
 
     pl.DataFrame(
         {
-            "primaryid": ["1001", "1002", "1004"],
-            "source_quarter": ["2024q1", "2024q2", "2024q3"],
-            "drug_seq": [1, 1, 1],
-            "start_dt": [date(2024, 1, 1), date(2024, 2, 1), date(2024, 4, 1)],
-            "end_dt": [None, None, None],
-            "dur": [10, 5, 14],
-            "dur_cod": ["DY", "DY", "DY"],
+            "primaryid": ["1001", "1002", "1004", "1004"],
+            "source_quarter": ["2024q1", "2024q2", "2024q3", "2024q3"],
+            "drug_seq": [1, 1, 1, 2],
+            "start_dt": [
+                date(2024, 1, 1),
+                date(2024, 2, 1),
+                date(2024, 4, 1),
+                date(2024, 4, 2),
+            ],
+            "end_dt": [None, None, None, None],
+            "dur": [10, 5, 14, 3],
+            "dur_cod": ["DY", "DY", "DY", "DY"],
         }
     ).write_parquet(warehouse / "ther.parquet")
 
@@ -160,7 +173,7 @@ def test_filter_metadata():
     assert "role_codes" in data
     assert "routes" in data
     assert "dose_units" in data
-    assert "reaction_outcomes" in data
+    assert "reaction_outcomes" not in data
     assert "case_outcomes" in data
     assert "reporter_types" in data
     assert "dur_codes" in data
@@ -191,6 +204,7 @@ def test_search_cases_with_drug():
         assert "drugs" in item
         assert "reactions" in item
         assert "outcomes" in item
+        assert "active_ingredients" in item
         assert isinstance(item["drugs"], list)
         assert isinstance(item["reactions"], list)
 
@@ -203,6 +217,51 @@ def test_search_cases_with_drug_and_reaction():
     assert data["items"][0]["case_version_pk"] == "1001"
     assert data["items"][0]["drugs"] == ["ASPIRIN"]
     assert data["items"][0]["reactions"] == ["HEADACHE"]
+
+
+def test_drug_and_indication_match_same_drug_row():
+    response = client.get("/cases/search?drug_name=aspirin&indication_pt=pain&limit=10")
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["total"] == 1
+    assert data["items"][0]["case_version_pk"] == "1001"
+
+
+def test_primary_terms_any_mode_returns_union():
+    primary_terms = json.dumps(
+        [
+            {"prod_ai": "aspirin"},
+            {"drug_name": "aspirin", "indication_pt": "fever"},
+        ]
+    )
+    response = client.get(
+        "/cases/search",
+        params={"primary_terms": primary_terms, "primary_term_mode": "any", "limit": 10},
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["total"] == 2
+    assert {item["case_version_pk"] for item in data["items"]} == {"1002", "1004"}
+
+
+def test_primary_terms_all_mode_requires_every_term():
+    primary_terms = json.dumps(
+        [
+            {"prod_ai": "aspirin"},
+            {"drug_name": "aspirin", "indication_pt": "fever"},
+        ]
+    )
+    response = client.get(
+        "/cases/search",
+        params={"primary_terms": primary_terms, "primary_term_mode": "all", "limit": 10},
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["total"] == 1
+    assert data["items"][0]["case_version_pk"] == "1002"
 
 
 def test_search_cases_pagination():
@@ -236,6 +295,7 @@ def test_case_detail():
     assert "reactions" in data
     assert isinstance(data["drugs"], list)
     assert isinstance(data["reactions"], list)
+    assert all("outcome" not in reaction for reaction in data["reactions"])
 
 
 def test_case_detail_not_found():
@@ -243,25 +303,9 @@ def test_case_detail_not_found():
     assert response.status_code == 404
 
 
-def test_aggregate_drug_reactions_requires_filter():
+def test_aggregate_drug_reactions_endpoint_removed():
     response = client.get("/aggregates/drug-reactions")
-    assert response.status_code == 422
-
-
-def test_aggregate_drug_reactions():
-    response = client.get("/aggregates/drug-reactions?drug_name=aspirin&limit=5")
-    assert response.status_code == 200
-    data = response.json()
-    assert "total" in data
-    assert "items" in data
-    assert len(data["items"]) <= 5
-
-    if data["items"]:
-        item = data["items"][0]
-        assert "drugname" in item
-        assert "reaction_pt" in item
-        assert "case_count" in item
-        assert item["case_count"] > 0
+    assert response.status_code == 404
 
 
 def test_search_with_demographic_filters():

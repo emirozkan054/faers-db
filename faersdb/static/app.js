@@ -4,37 +4,35 @@ const caseSummaryEl = document.getElementById("case-summary");
 const caseFilterSummaryEl = document.getElementById("case-filter-summary");
 const caseResultsEl = document.getElementById("case-results");
 const casePagerEl = document.getElementById("case-pager");
-const aggregateSummaryEl = document.getElementById("aggregate-summary");
-const aggregateFilterSummaryEl = document.getElementById("aggregate-filter-summary");
-const aggregateResultsEl = document.getElementById("aggregate-results");
 const caseDetailEl = document.getElementById("case-detail");
 const savedSearchNameEl = document.getElementById("saved-search-name");
 const savedSearchListEl = document.getElementById("saved-searches-list");
 const searchForm = document.getElementById("search-form");
-const aggregateButton = document.getElementById("search-aggregates");
+const primaryTermsEl = document.getElementById("primary-terms");
+const primaryTermModeEl = document.getElementById("primary-term-mode");
+const addPrimaryTermButton = document.getElementById("add-primary-term");
 const clearFiltersButton = document.getElementById("clear-filters");
 const saveSearchButton = document.getElementById("save-search");
 const exportCasesButton = document.getElementById("export-cases");
 const exportCaseReportButton = document.getElementById("export-case-report");
-const exportAggregatesButton = document.getElementById("export-aggregates");
-const exportAggregateReportButton = document.getElementById("export-aggregate-report");
 
 const DEFAULT_LIMIT = 25;
 const SAVED_SEARCH_STORAGE_KEY = "faersdb.savedSearches.v1";
-const SEARCH_MODES = {
-  CASES: "cases",
-  AGGREGATES: "aggregates",
+const SEARCH_MODE = "cases";
+const TERM_FIELDS = ["drug_name", "prod_ai", "reaction_pt", "indication_pt"];
+const TERM_FIELD_CONFIG = {
+  drug_name: { label: "Drug name", placeholder: "aspirin" },
+  prod_ai: { label: "Active ingredient", placeholder: "ibuprofen" },
+  reaction_pt: { label: "Reaction", placeholder: "headache" },
+  indication_pt: { label: "Indication", placeholder: "pain" },
 };
 const FORM_FIELD_NAMES = Array.from(searchForm.elements)
   .filter((element) => element.name)
   .map((element) => element.name);
 
 let latestCasePayload = null;
-let latestAggregatePayload = null;
 let filterMetadata = null;
 let caseSearchState = null;
-let aggregateSearchState = null;
-let activeWorkflowState = null;
 
 const SELECT_FIELDS = {
   quarter: "quarters",
@@ -44,16 +42,12 @@ const SELECT_FIELDS = {
   age_group: "age_groups",
   role_cod: "role_codes",
   route: "routes",
-  reaction_outcome: "reaction_outcomes",
   case_outcome: "case_outcomes",
   reporter_type: "reporter_types",
 };
 
 const FILTER_LABELS = {
-  drug_name: "Drug",
-  prod_ai: "Ingredient",
-  reaction_pt: "Reaction",
-  indication_pt: "Indication",
+  primary_terms: "Primary term",
   quarter: "Quarter",
   report_type: "Report type",
   initial_or_followup: "I/F",
@@ -68,12 +62,10 @@ const FILTER_LABELS = {
   reporter_country: "Country",
   role_cod: "Role",
   route: "Route",
-  reaction_outcome: "Reaction outcome",
   case_outcome: "Case outcome",
   reporter_type: "Reporter",
   therapy_start_from: "Therapy start",
   therapy_end_to: "Therapy end",
-  limit: "Limit",
 };
 
 function setStatus(message, isError = false) {
@@ -97,13 +89,119 @@ function arrayText(values) {
   return values.join(", ");
 }
 
+function emptyTerm() {
+  return {
+    drug_name: "",
+    prod_ai: "",
+    reaction_pt: "",
+    indication_pt: "",
+  };
+}
+
+function cleanTerm(rawTerm = {}) {
+  const term = {};
+  TERM_FIELDS.forEach((field) => {
+    const value = String(rawTerm[field] ?? "").trim();
+    if (value !== "") {
+      term[field] = value;
+    }
+  });
+  return term;
+}
+
+function termHasFilters(term) {
+  return TERM_FIELDS.some((field) => String(term[field] ?? "").trim() !== "");
+}
+
+function parsePrimaryTermsValue(value) {
+  if (!value) {
+    return [];
+  }
+  try {
+    const parsed = typeof value === "string" ? JSON.parse(value) : value;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.map(cleanTerm).filter(termHasFilters);
+  } catch (error) {
+    return [];
+  }
+}
+
+function termsFromParams(params = {}) {
+  const explicitTerms = parsePrimaryTermsValue(params.primary_terms);
+  if (explicitTerms.length > 0 || params.primary_terms) {
+    return explicitTerms;
+  }
+
+  const legacyTerm = cleanTerm(params);
+  return termHasFilters(legacyTerm) ? [legacyTerm] : [];
+}
+
+function renderPrimaryTerms(terms = [emptyTerm()]) {
+  const rows = terms.length > 0 ? terms : [emptyTerm()];
+  primaryTermsEl.innerHTML = rows.map((term, index) => `
+    <div class="term-row" data-term-index="${index}">
+      ${TERM_FIELDS.map((field) => `
+        <label>
+          ${escapeHtml(TERM_FIELD_CONFIG[field].label)}
+          <input data-term-field="${escapeHtml(field)}" value="${escapeHtml(term[field] || "")}" placeholder="${escapeHtml(TERM_FIELD_CONFIG[field].placeholder)}">
+        </label>
+      `).join("")}
+      <button type="button" class="ghost remove-primary-term" ${rows.length === 1 ? "disabled" : ""}>Remove</button>
+    </div>
+  `).join("");
+
+  primaryTermsEl.querySelectorAll(".remove-primary-term").forEach((button) => {
+    button.addEventListener("click", () => {
+      button.closest(".term-row")?.remove();
+      if (primaryTermsEl.querySelectorAll(".term-row").length === 0) {
+        renderPrimaryTerms([emptyTerm()]);
+      } else {
+        updateRemoveTermButtons();
+      }
+    });
+  });
+}
+
+function updateRemoveTermButtons() {
+  const buttons = primaryTermsEl.querySelectorAll(".remove-primary-term");
+  buttons.forEach((button) => {
+    button.disabled = buttons.length === 1;
+  });
+}
+
+function addPrimaryTerm(term = emptyTerm()) {
+  const currentTerms = rowsToTerms({ includeEmpty: true });
+  currentTerms.push(term);
+  renderPrimaryTerms(currentTerms);
+}
+
+function rowsToTerms({ includeEmpty = false } = {}) {
+  return Array.from(primaryTermsEl.querySelectorAll(".term-row"))
+    .map((row) => {
+      const term = {};
+      row.querySelectorAll("[data-term-field]").forEach((input) => {
+        term[input.dataset.termField] = input.value;
+      });
+      return includeEmpty ? { ...emptyTerm(), ...term } : cleanTerm(term);
+    })
+    .filter((term) => includeEmpty || termHasFilters(term));
+}
+
 function currentParams() {
   const formData = new FormData(searchForm);
   const params = {};
 
   for (const [key, value] of formData.entries()) {
     const cleaned = value.toString().trim();
-    params[key] = key === "limit" ? Number(cleaned || DEFAULT_LIMIT) : cleaned;
+    params[key] = cleaned;
+  }
+
+  const terms = rowsToTerms();
+  if (terms.length > 0) {
+    params.primary_terms = JSON.stringify(terms);
+    params.primary_term_mode = primaryTermModeEl.value || "any";
   }
 
   return params;
@@ -111,11 +209,15 @@ function currentParams() {
 
 function normalizeParams(rawParams = currentParams()) {
   const params = {};
+  const terms = termsFromParams(rawParams);
+
+  if (terms.length > 0) {
+    params.primary_terms = JSON.stringify(terms);
+    params.primary_term_mode = rawParams.primary_term_mode === "all" ? "all" : "any";
+  }
 
   Object.entries(rawParams).forEach(([key, value]) => {
-    if (key === "limit") {
-      const parsed = Number(value);
-      params.limit = Number.isFinite(parsed) && parsed > 0 ? Math.min(100, Math.max(1, parsed)) : DEFAULT_LIMIT;
+    if (TERM_FIELDS.includes(key) || key === "primary_terms" || key === "primary_term_mode" || key === "limit") {
       return;
     }
     if (key === "offset") {
@@ -132,17 +234,18 @@ function normalizeParams(rawParams = currentParams()) {
     }
   });
 
-  if (!("limit" in params)) {
-    params.limit = DEFAULT_LIMIT;
-  }
+  params.limit = DEFAULT_LIMIT;
 
   return params;
 }
 
 function activeFilterEntries(params) {
   return Object.entries(params).filter(([key, value]) => {
-    if (key === "limit" || key === "offset") {
+    if (key === "limit" || key === "offset" || key === "primary_term_mode") {
       return false;
+    }
+    if (key === "primary_terms") {
+      return parsePrimaryTermsValue(value).length > 0;
     }
     return value !== "" && value !== null && value !== undefined;
   });
@@ -152,10 +255,28 @@ function hasActiveFilters(params) {
   return activeFilterEntries(params).length > 0;
 }
 
+function termSummary(term) {
+  return TERM_FIELDS
+    .filter((field) => term[field])
+    .map((field) => `${TERM_FIELD_CONFIG[field].label}: ${term[field]}`)
+    .join(" | ");
+}
+
 function filterChips(params) {
-  const chips = activeFilterEntries(params)
-    .filter(([key]) => FILTER_LABELS[key])
-    .map(([key, value]) => [FILTER_LABELS[key], value]);
+  const chips = [];
+  const terms = parsePrimaryTermsValue(params.primary_terms);
+  const termMode = params.primary_term_mode === "all" ? "All terms" : "Any term";
+
+  terms.forEach((term, index) => {
+    chips.push([
+      terms.length > 1 ? `${termMode} ${index + 1}` : "Primary term",
+      termSummary(term),
+    ]);
+  });
+
+  activeFilterEntries(params)
+    .filter(([key]) => key !== "primary_terms" && FILTER_LABELS[key])
+    .forEach(([key, value]) => chips.push([FILTER_LABELS[key], value]));
 
   if (chips.length === 0) {
     return "";
@@ -169,24 +290,32 @@ function filterChips(params) {
 function buildQuery(params) {
   const query = new URLSearchParams();
   Object.entries(normalizeParams(params)).forEach(([key, value]) => {
-    if (value !== null && value !== undefined && value !== "") {
+    if (key !== "offset" && value !== null && value !== undefined && value !== "") {
       query.set(key, String(value));
     }
   });
+  if (params.offset && Number(params.offset) > 0) {
+    query.set("offset", String(params.offset));
+  }
   return query.toString();
 }
 
 function resetFormToDefaults() {
   searchForm.reset();
-  const limitField = searchForm.elements.namedItem("limit");
-  if (limitField) {
-    limitField.value = String(DEFAULT_LIMIT);
-  }
+  primaryTermModeEl.value = "any";
+  renderPrimaryTerms([emptyTerm()]);
 }
 
 function applyParamsToForm(params) {
   resetFormToDefaults();
+  const terms = termsFromParams(params);
+  renderPrimaryTerms(terms.length > 0 ? terms : [emptyTerm()]);
+  primaryTermModeEl.value = params.primary_term_mode === "all" ? "all" : "any";
+
   Object.entries(params).forEach(([key, value]) => {
+    if (TERM_FIELDS.includes(key) || key === "primary_terms" || key === "primary_term_mode") {
+      return;
+    }
     const field = searchForm.elements.namedItem(key);
     if (field) {
       field.value = String(value);
@@ -198,35 +327,30 @@ function readUrlState() {
   const query = new URLSearchParams(window.location.search);
   const params = {};
 
-  FORM_FIELD_NAMES.forEach((name) => {
-    if (query.has(name)) {
-      params[name] = query.get(name) || "";
+  query.forEach((value, key) => {
+    if (key !== "mode") {
+      params[key] = value || "";
     }
   });
 
-  if (query.has("offset")) {
-    params.offset = query.get("offset") || "0";
-  }
-
-  const requestedMode = query.get("mode");
-  const mode = requestedMode === SEARCH_MODES.AGGREGATES ? SEARCH_MODES.AGGREGATES : SEARCH_MODES.CASES;
   return {
-    mode,
     params: normalizeParams(params),
     offset: Number(query.get("offset") || 0),
   };
 }
 
-function writeUrlState(params, mode, offset = 0) {
+function writeUrlState(params, offset = 0) {
   const query = new URLSearchParams();
   const normalized = normalizeParams(params);
   const active = hasActiveFilters(normalized);
 
   if (active) {
     Object.entries(normalized).forEach(([key, value]) => {
+      if (key === "limit" || key === "offset") {
+        return;
+      }
       query.set(key, String(value));
     });
-    query.set("mode", mode);
     if (offset > 0) {
       query.set("offset", String(offset));
     }
@@ -247,40 +371,28 @@ function formatTimestamp(value) {
   return timestamp.toLocaleString();
 }
 
-function modeLabel(mode) {
-  return mode === SEARCH_MODES.AGGREGATES ? "Drug-reaction aggregates" : "Case cohort";
-}
-
-function activeSearchPayload() {
-  if (!activeWorkflowState) {
-    return null;
-  }
-  return activeWorkflowState.mode === SEARCH_MODES.AGGREGATES ? latestAggregatePayload : latestCasePayload;
-}
-
 function renderCohortSummary() {
-  if (!activeWorkflowState) {
+  if (!caseSearchState) {
     cohortSummaryEl.innerHTML = '<p class="empty-state">No active cohort yet. Run a search to capture a reproducible cohort summary.</p>';
     return;
   }
 
-  const payload = activeSearchPayload();
-  const params = activeWorkflowState.params;
+  const payload = latestCasePayload;
+  const params = caseSearchState.params;
   const filterCount = activeFilterEntries(params).length;
   const total = payload?.total ?? 0;
   const shown = payload?.items?.length ?? 0;
-  const totalLabel = activeWorkflowState.mode === SEARCH_MODES.AGGREGATES ? "Aggregate rows" : "Matching cases";
 
   cohortSummaryEl.innerHTML = `
     <div class="toolbar">
       <strong>Active cohort</strong>
-      <span class="hint">${escapeHtml(modeLabel(activeWorkflowState.mode))}</span>
+      <span class="hint">Case cohort</span>
     </div>
     <div class="meta">
-      <div><strong>${escapeHtml(totalLabel)}</strong>${escapeHtml(total)}</div>
+      <div><strong>Matching cases</strong>${escapeHtml(total)}</div>
       <div><strong>Rows in current view</strong>${escapeHtml(shown)}</div>
       <div><strong>Active filters</strong>${escapeHtml(filterCount)}</div>
-      <div><strong>Last run</strong>${escapeHtml(formatTimestamp(activeWorkflowState.executedAt))}</div>
+      <div><strong>Last run</strong>${escapeHtml(formatTimestamp(caseSearchState.executedAt))}</div>
     </div>
     <p class="hint">The browser URL now reflects this cohort, so the current search can be bookmarked or shared locally.</p>
     <div class="chips">${filterChips(params) || '<span class="chip">No active filters</span>'}</div>
@@ -336,13 +448,15 @@ function timestampSlug() {
   return new Date().toISOString().replaceAll(":", "-");
 }
 
-function buildSearchUrl(params, mode, offset = 0) {
+function buildSearchUrl(params, offset = 0) {
   const query = new URLSearchParams();
   const normalized = normalizeParams(params);
   Object.entries(normalized).forEach(([key, value]) => {
+    if (key === "limit" || key === "offset") {
+      return;
+    }
     query.set(key, String(value));
   });
-  query.set("mode", mode);
   if (offset > 0) {
     query.set("offset", String(offset));
   }
@@ -410,19 +524,22 @@ function renderSavedSearches() {
     return;
   }
 
-  savedSearchListEl.innerHTML = savedSearches.map((savedSearch) => `
-    <div class="saved-search-item">
-      <div>
-        <strong>${escapeHtml(savedSearch.name)}</strong>
-        <p class="hint">${escapeHtml(modeLabel(savedSearch.mode || SEARCH_MODES.CASES))} | ${escapeHtml(activeFilterEntries(savedSearch.params || {}).length)} filters | saved ${escapeHtml(formatTimestamp(savedSearch.saved_at))}</p>
+  savedSearchListEl.innerHTML = savedSearches.map((savedSearch) => {
+    const params = normalizeParams(savedSearch.params || {});
+    return `
+      <div class="saved-search-item">
+        <div>
+          <strong>${escapeHtml(savedSearch.name)}</strong>
+          <p class="hint">Case cohort | ${escapeHtml(activeFilterEntries(params).length)} filters | saved ${escapeHtml(formatTimestamp(savedSearch.saved_at))}</p>
+        </div>
+        <div class="chips">${filterChips(params) || '<span class="chip">No active filters</span>'}</div>
+        <div class="actions">
+          <button type="button" class="ghost load-saved-search" data-saved-search-id="${escapeHtml(savedSearch.id)}">Load</button>
+          <button type="button" class="ghost delete-saved-search" data-saved-search-id="${escapeHtml(savedSearch.id)}">Delete</button>
+        </div>
       </div>
-      <div class="chips">${filterChips(savedSearch.params || {}) || '<span class="chip">No active filters</span>'}</div>
-      <div class="actions">
-        <button type="button" class="ghost load-saved-search" data-saved-search-id="${escapeHtml(savedSearch.id)}">Load</button>
-        <button type="button" class="ghost delete-saved-search" data-saved-search-id="${escapeHtml(savedSearch.id)}">Delete</button>
-      </div>
-    </div>
-  `).join("");
+    `;
+  }).join("");
 
   savedSearchListEl.querySelectorAll(".load-saved-search").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -447,7 +564,6 @@ function buildSavedSearchId() {
 function saveCurrentSearch() {
   const name = savedSearchNameEl.value.trim();
   const params = normalizeParams(currentParams());
-  const mode = activeWorkflowState?.mode || SEARCH_MODES.CASES;
 
   if (!name) {
     setStatus("Choose a saved-search name before saving.", true);
@@ -464,7 +580,7 @@ function saveCurrentSearch() {
   const entry = {
     id: existing?.id || buildSavedSearchId(),
     name,
-    mode,
+    mode: SEARCH_MODE,
     saved_at: savedAt,
     params,
   };
@@ -486,13 +602,9 @@ async function loadSavedSearch(savedSearchId) {
   }
 
   savedSearchNameEl.value = savedSearch.name;
-  applyParamsToForm(savedSearch.params || {});
-
-  if ((savedSearch.mode || SEARCH_MODES.CASES) === SEARCH_MODES.AGGREGATES) {
-    await runAggregateSearch(savedSearch.params || {});
-  } else {
-    await runCaseSearchWithOffset(0, savedSearch.params || {});
-  }
+  const params = normalizeParams(savedSearch.params || {});
+  applyParamsToForm(params);
+  await runCaseSearchWithOffset(0, params);
 }
 
 function deleteSavedSearch(savedSearchId) {
@@ -548,13 +660,14 @@ function renderCaseResults(payload, params) {
 
   const rows = payload.items.map((item) => `
     <tr>
-      <td><button class="ghost view-case" data-case-version-pk="${item.case_version_pk}">Open</button></td>
+      <td><button class="ghost view-case" data-case-version-pk="${escapeHtml(item.case_version_pk)}">Open</button></td>
       <td class="mono">${escapeHtml(item.source_report_id)}</td>
       <td>${escapeHtml(item.source_quarter)}</td>
       <td>${escapeHtml(item.report_type || "n/a")}</td>
       <td>${escapeHtml(item.reporter_country || "n/a")}</td>
       <td>${escapeHtml(item.sex_std || "n/a")} / ${escapeHtml(item.age_value ?? "n/a")} ${escapeHtml(item.age_unit || "")}</td>
       <td>${escapeHtml(arrayText(item.drugs))}</td>
+      <td>${escapeHtml(arrayText(item.active_ingredients))}</td>
       <td>${escapeHtml(arrayText(item.reactions))}</td>
       <td>${escapeHtml(arrayText(item.outcomes))}</td>
     </tr>
@@ -571,6 +684,7 @@ function renderCaseResults(payload, params) {
           <th>Country</th>
           <th>Demographics</th>
           <th>Drugs</th>
+          <th>Active ingredients</th>
           <th>Reactions</th>
           <th>Outcomes</th>
         </tr>
@@ -581,53 +695,11 @@ function renderCaseResults(payload, params) {
 
   caseResultsEl.querySelectorAll(".view-case").forEach((button) => {
     button.addEventListener("click", () => {
-      loadCaseDetail(Number(button.dataset.caseVersionPk));
+      loadCaseDetail(button.dataset.caseVersionPk);
     });
   });
 
   renderPager(payload, params);
-}
-
-function renderAggregateResults(payload, params) {
-  latestAggregatePayload = payload;
-  aggregateSummaryEl.textContent = `Showing ${payload.items.length} of ${payload.total} drug-reaction combinations.`;
-  aggregateFilterSummaryEl.innerHTML = filterChips({ ...params, limit: payload.limit });
-
-  if (payload.items.length === 0) {
-    aggregateResultsEl.innerHTML = '<p class="empty-state">No aggregate matches found.</p>';
-    return;
-  }
-
-  const rows = payload.items.map((item) => `
-    <tr>
-      <td>${escapeHtml(item.drugname)}</td>
-      <td>
-        ${escapeHtml(item.reaction_pt)}
-        <div><button class="ghost use-reaction" data-reaction="${escapeHtml(item.reaction_pt)}">Find matching cases</button></div>
-      </td>
-      <td>${escapeHtml(item.case_count)}</td>
-    </tr>
-  `).join("");
-
-  aggregateResultsEl.innerHTML = `
-    <table>
-      <thead>
-        <tr>
-          <th>Drug</th>
-          <th>Reaction</th>
-          <th>Latest Cases</th>
-        </tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
-  `;
-
-  aggregateResultsEl.querySelectorAll(".use-reaction").forEach((button) => {
-    button.addEventListener("click", async () => {
-      document.getElementById("reaction-pt").value = button.dataset.reaction || "";
-      await runCaseSearchWithOffset(0, currentParams());
-    });
-  });
 }
 
 function renderCaseDetail(payload) {
@@ -636,6 +708,7 @@ function renderCaseDetail(payload) {
     : payload.drugs.map((drug) => `
         <div class="detail-block">
           <strong>${escapeHtml(drug.drugname || "Unknown drug")}</strong>
+          <p class="hint">Active ingredient: ${escapeHtml(drug.prod_ai || "n/a")}</p>
           <p class="hint">Role: ${escapeHtml(drug.role_cod || "n/a")} | Route: ${escapeHtml(drug.route || "n/a")}</p>
           <p>Dose: ${escapeHtml(drug.dose_amt ?? "n/a")} ${escapeHtml(drug.dose_unit || "")}</p>
           <p>Indications: ${escapeHtml(arrayText(drug.indications))}</p>
@@ -646,7 +719,7 @@ function renderCaseDetail(payload) {
   const reactionBlocks = payload.reactions.length === 0
     ? '<p class="empty-state">No reactions linked to this case version.</p>'
     : payload.reactions.map((reaction) => `
-        <div class="chip">${escapeHtml(reaction.reaction_pt)}${reaction.outcome ? ` (${escapeHtml(reaction.outcome)})` : ""}</div>
+        <div class="chip">${escapeHtml(reaction.reaction_pt)}</div>
       `).join("");
 
   caseDetailEl.innerHTML = `
@@ -700,15 +773,14 @@ async function runCaseSearchWithOffset(offset, params) {
   try {
     const payload = await fetchJson(`/cases/search?${buildQuery(effectiveParams)}`);
     caseSearchState = {
-      mode: SEARCH_MODES.CASES,
+      mode: SEARCH_MODE,
       params: baseParams,
       offset: payload.offset,
       executedAt: new Date().toISOString(),
     };
-    activeWorkflowState = caseSearchState;
     renderCaseResults(payload, baseParams);
     renderCohortSummary();
-    writeUrlState(baseParams, SEARCH_MODES.CASES, payload.offset);
+    writeUrlState(baseParams, payload.offset);
     savedSearchNameEl.value = savedSearchNameEl.value.trim();
 
     if (payload.items.length > 0) {
@@ -729,39 +801,12 @@ async function runCaseSearch(event) {
   await runCaseSearchWithOffset(0, currentParams());
 }
 
-async function runAggregateSearch(params = currentParams()) {
-  const normalized = normalizeParams(params);
-  if (!hasActiveFilters(normalized)) {
-    setStatus("Choose at least one filter before searching.", true);
-    return;
-  }
-
-  setStatus("Loading aggregate counts...");
-  try {
-    const payload = await fetchJson(`/aggregates/drug-reactions?${buildQuery(normalized)}`);
-    aggregateSearchState = {
-      mode: SEARCH_MODES.AGGREGATES,
-      params: normalized,
-      offset: 0,
-      executedAt: new Date().toISOString(),
-    };
-    activeWorkflowState = aggregateSearchState;
-    renderAggregateResults(payload, normalized);
-    renderCohortSummary();
-    writeUrlState(normalized, SEARCH_MODES.AGGREGATES, 0);
-    setStatus("Aggregate search complete.");
-  } catch (error) {
-    aggregateResultsEl.innerHTML = '<p class="empty-state">Aggregate search failed.</p>';
-    setStatus(`Aggregate search failed: ${error.message}`, true);
-  }
-}
-
-function buildReportPayload(mode, payload, searchState) {
+function buildReportPayload(payload, searchState) {
   const params = searchState?.params || {};
   return {
-    search_type: mode,
+    search_type: SEARCH_MODE,
     exported_at: new Date().toISOString(),
-    shareable_url: buildSearchUrl(params, mode, searchState?.offset || 0),
+    shareable_url: buildSearchUrl(params, searchState?.offset || 0),
     active_filter_count: activeFilterEntries(params).length,
     filters: Object.fromEntries(activeFilterEntries(params)),
     pagination: {
@@ -783,7 +828,7 @@ function exportCasesCsv() {
   }
 
   downloadCsv("faers-case-results.csv", [
-    ["source_report_id", "source_quarter", "report_type", "reporter_country", "sex_std", "age_value", "age_unit", "drugs", "reactions", "outcomes"],
+    ["source_report_id", "source_quarter", "report_type", "reporter_country", "sex_std", "age_value", "age_unit", "drugs", "active_ingredients", "reactions", "outcomes"],
     ...latestCasePayload.items.map((item) => [
       item.source_report_id,
       item.source_quarter,
@@ -793,6 +838,7 @@ function exportCasesCsv() {
       item.age_value,
       item.age_unit,
       arrayText(item.drugs),
+      arrayText(item.active_ingredients),
       arrayText(item.reactions),
       arrayText(item.outcomes),
     ]),
@@ -806,55 +852,22 @@ function exportCaseReport() {
     return;
   }
 
-  downloadJson(`faers-case-report-${timestampSlug()}.json`, buildReportPayload(SEARCH_MODES.CASES, latestCasePayload, caseSearchState));
+  downloadJson(`faers-case-report-${timestampSlug()}.json`, buildReportPayload(latestCasePayload, caseSearchState));
   setStatus("Exported case report JSON with filters and totals.");
-}
-
-function exportAggregateCsv() {
-  if (!latestAggregatePayload || latestAggregatePayload.items.length === 0) {
-    setStatus("Run an aggregate search before exporting.", true);
-    return;
-  }
-
-  downloadCsv("faers-drug-reaction-aggregates.csv", [
-    ["drugname", "reaction_pt", "case_count"],
-    ...latestAggregatePayload.items.map((item) => [
-      item.drugname,
-      item.reaction_pt,
-      item.case_count,
-    ]),
-  ]);
-  setStatus("Exported current aggregate results to CSV.");
-}
-
-function exportAggregateReport() {
-  if (!latestAggregatePayload || !aggregateSearchState) {
-    setStatus("Run an aggregate search before exporting a report.", true);
-    return;
-  }
-
-  downloadJson(`faers-aggregate-report-${timestampSlug()}.json`, buildReportPayload(SEARCH_MODES.AGGREGATES, latestAggregatePayload, aggregateSearchState));
-  setStatus("Exported aggregate report JSON with filters and totals.");
 }
 
 function clearFilters() {
   resetFormToDefaults();
   savedSearchNameEl.value = "";
   caseSummaryEl.textContent = "No case search has been run yet.";
-  aggregateSummaryEl.textContent = "No aggregate search has been run yet.";
   caseFilterSummaryEl.innerHTML = "";
-  aggregateFilterSummaryEl.innerHTML = "";
   caseResultsEl.innerHTML = "";
-  aggregateResultsEl.innerHTML = "";
   casePagerEl.innerHTML = "";
   caseDetailEl.innerHTML = '<p class="empty-state">Select a case from the table to inspect its linked drugs, reactions, outcomes, and metadata.</p>';
   latestCasePayload = null;
-  latestAggregatePayload = null;
   caseSearchState = null;
-  aggregateSearchState = null;
-  activeWorkflowState = null;
   renderCohortSummary();
-  writeUrlState({}, SEARCH_MODES.CASES, 0);
+  writeUrlState({}, 0);
   setStatus("Filters cleared.");
 }
 
@@ -868,21 +881,17 @@ async function hydrateFromUrl() {
   }
 
   savedSearchNameEl.value = "";
-  if (urlState.mode === SEARCH_MODES.AGGREGATES) {
-    await runAggregateSearch(urlState.params);
-  } else {
-    await runCaseSearchWithOffset(urlState.offset, urlState.params);
-  }
+  await runCaseSearchWithOffset(urlState.offset, urlState.params);
 }
 
+renderPrimaryTerms([emptyTerm()]);
+
 searchForm.addEventListener("submit", runCaseSearch);
-aggregateButton.addEventListener("click", () => runAggregateSearch());
+addPrimaryTermButton.addEventListener("click", () => addPrimaryTerm());
 clearFiltersButton.addEventListener("click", clearFilters);
 saveSearchButton.addEventListener("click", saveCurrentSearch);
 exportCasesButton.addEventListener("click", exportCasesCsv);
 exportCaseReportButton.addEventListener("click", exportCaseReport);
-exportAggregatesButton.addEventListener("click", exportAggregateCsv);
-exportAggregateReportButton.addEventListener("click", exportAggregateReport);
 
 renderSavedSearches();
 loadFilterMetadata().then(() => hydrateFromUrl());

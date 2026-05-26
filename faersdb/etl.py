@@ -863,9 +863,6 @@ def build_query_tables(
                     coalesce((SELECT list(dose_unit ORDER BY dose_unit)
                         FROM (SELECT DISTINCT dose_unit FROM latest_drug
                               WHERE dose_unit IS NOT NULL)), CAST([] AS VARCHAR[])) AS dose_units,
-                    coalesce((SELECT list(drug_rec_act ORDER BY drug_rec_act)
-                        FROM (SELECT DISTINCT drug_rec_act FROM latest_reac
-                              WHERE drug_rec_act IS NOT NULL)), CAST([] AS VARCHAR[])) AS reaction_outcomes,
                     coalesce((SELECT list(outc_cod ORDER BY outc_cod)
                         FROM (SELECT DISTINCT outc_cod FROM latest_outc
                               WHERE outc_cod IS NOT NULL)), CAST([] AS VARCHAR[])) AS case_outcomes,
