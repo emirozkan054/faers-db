@@ -109,6 +109,12 @@
       align-items: center;
     }
 
+    .app-meta {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
     .status-bar {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
@@ -587,6 +593,7 @@
         <p class="eyebrow">FAERS Research UI</p>
         <h1>FAERS Research Workbench</h1>
         <p class="subtitle">Build reproducible local cohorts, scan case evidence, and inspect drugs, reactions, outcomes, and reporter metadata.</p>
+        <p id="app-meta" class="app-meta">Checking local data bundle...</p>
       </div>
       <div class="actions">
         <a class="button-link secondary" href="/docs" target="_blank" rel="noreferrer">API Docs</a>

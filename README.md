@@ -102,14 +102,34 @@ uv run python -m faersdb build --quarter 2024q1
 # Show warehouse statistics
 uv run python -m faersdb info
 
+# Validate a warehouse before shipping it
+uv run python -m faersdb validate-warehouse
+
+# Write a release manifest for a validated warehouse
+uv run python -m faersdb write-manifest --dataset-version 2025q4
+
 # Start the API server
 uv run python -m faersdb serve --reload
+
+# Launch the local browser app with warehouse validation
+uv run python -m faersdb launch
 ```
 
 ### Running Tests
 ```bash
 uv run pytest
 ```
+
+### Windows Distribution
+
+For non-technical Windows users, build and validate the Parquet warehouse yourself, ship it as a separate `warehouse` data bundle, and package the launcher with PyInstaller:
+
+```powershell
+uv sync --group dev
+uv run pyinstaller --clean --noconfirm faers-db-windows.spec
+```
+
+See `docs/windows-distribution.md` for the complete release and data update checklist.
 
 ---
 

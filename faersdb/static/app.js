@@ -1,4 +1,5 @@
 const statusEl = document.getElementById("status");
+const appMetaEl = document.getElementById("app-meta");
 const cohortSummaryEl = document.getElementById("cohort-summary");
 const caseSummaryEl = document.getElementById("case-summary");
 const caseFilterSummaryEl = document.getElementById("case-filter-summary");
@@ -576,6 +577,20 @@ async function fetchJson(url) {
   return response.json();
 }
 
+async function loadAppStatus() {
+  try {
+    const status = await fetchJson("/app/status");
+    const warehouse = status.warehouse || {};
+    const manifestName = warehouse.manifest_path ? "manifest found" : "no manifest";
+    appMetaEl.textContent = `App ${status.app_version || "local"} · data ${warehouse.ready ? "ready" : "not ready"} · ${manifestName}`;
+    if (!warehouse.ready && Array.isArray(warehouse.errors) && warehouse.errors.length > 0) {
+      setStatus(warehouse.errors.join(" "), true);
+    }
+  } catch (error) {
+    appMetaEl.textContent = "Unable to read local data status.";
+  }
+}
+
 async function postJson(url, payload) {
   const response = await fetch(url, {
     method: "POST",
@@ -995,4 +1010,5 @@ clearFiltersButton.addEventListener("click", clearFilters);
 exportCasesButton.addEventListener("click", exportCasesCsv);
 exportCaseReportButton.addEventListener("click", exportCaseReport);
 
+loadAppStatus();
 loadFilterMetadata().then(() => hydrateFromUrl());

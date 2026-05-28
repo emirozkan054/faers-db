@@ -18,6 +18,8 @@ from faersdb.queries import (
     get_filter_metadata,
     search_cases,
 )
+from faersdb.config import settings
+from faersdb.warehouse import app_version, validate_warehouse
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 NO_CACHE_HEADERS = {
@@ -61,6 +63,15 @@ def app_shell():
 @app.get("/health", response_model=HealthResponse)
 def health():
     return HealthResponse(status="ok")
+
+
+@app.get("/app/status", response_model=dict)
+def app_status():
+    warehouse_status = validate_warehouse(settings.warehouse_path)
+    return {
+        "app_version": app_version(),
+        "warehouse": warehouse_status.to_dict(),
+    }
 
 
 @app.get("/filters/metadata", response_model=FilterMetadataResponse)

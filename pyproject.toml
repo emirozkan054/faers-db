@@ -18,9 +18,14 @@ dependencies = [
     "uvicorn>=0.42.0",
 ]
 
+[project.scripts]
+faers-db = "faersdb.cli:app"
+faers-db-launch = "faersdb.launcher:main"
+
 [dependency-groups]
 dev = [
     "mypy>=1.19.1",
+    "pyinstaller>=6.20.0",
     "pytest>=9.0.2",
     "pytest-cov>=7.0.0",
     "ruff>=0.15.6",

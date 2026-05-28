@@ -185,6 +185,15 @@ def test_health():
     assert response.json()["status"] == "ok"
 
 
+def test_app_status():
+    response = client.get("/app/status")
+    assert response.status_code == 200
+    data = response.json()
+    assert "app_version" in data
+    assert data["warehouse"]["ready"] is True
+    assert data["warehouse"]["missing_files"] == []
+
+
 def test_app_shell():
     response = client.get("/app")
     assert response.status_code == 200
