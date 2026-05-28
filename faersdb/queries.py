@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from faersdb.api_models import (
-    CaseSearchParams,
+    CaseSearchRequest,
+    DrugConcept,
     FilterMetadataResponse,
-    PrimaryTerm,
+    ReactionConcept,
 )
 from faersdb.db import get_conn, missing_query_tables
 
@@ -44,280 +45,265 @@ def _where(clauses: list[str]) -> str:
     return " WHERE " + " AND ".join(f"({clause})" for clause in clauses)
 
 
+def _like_pattern(value: str) -> str:
+    escaped = (
+        value.upper()
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+    return f"%{escaped}%"
+
+
 def _build_case_clauses(params, query_params: list) -> list[str]:
+    filters = params.case_filters
     clauses: list[str] = []
 
-    if params.quarter:
-        _add_clause(clauses, query_params, "c.source_quarter = ?", params.quarter)
-    if params.report_type:
-        _add_clause(clauses, query_params, "c.report_type_search = ?", params.report_type)
-    if params.initial_or_followup:
+    if filters.quarter:
+        _add_clause(clauses, query_params, "c.source_quarter = ?", filters.quarter)
+    if filters.report_type:
+        _add_clause(clauses, query_params, "c.report_type_search = ?", filters.report_type)
+    if filters.initial_or_followup:
         _add_clause(
-            clauses, query_params, "c.i_f_code_search = ?", params.initial_or_followup
+            clauses, query_params, "c.i_f_code_search = ?", filters.initial_or_followup
         )
-    if params.event_dt_from:
-        _add_clause(clauses, query_params, "c.event_dt >= ?", params.event_dt_from)
-    if params.event_dt_to:
-        _add_clause(clauses, query_params, "c.event_dt <= ?", params.event_dt_to)
-    if params.fda_dt_from:
-        _add_clause(clauses, query_params, "c.fda_dt >= ?", params.fda_dt_from)
-    if params.fda_dt_to:
-        _add_clause(clauses, query_params, "c.fda_dt <= ?", params.fda_dt_to)
-    if params.mfr_dt_from:
-        _add_clause(clauses, query_params, "c.mfr_dt >= ?", params.mfr_dt_from)
-    if params.mfr_dt_to:
-        _add_clause(clauses, query_params, "c.mfr_dt <= ?", params.mfr_dt_to)
+    if filters.event_dt_from:
+        _add_clause(clauses, query_params, "c.event_dt >= ?", filters.event_dt_from)
+    if filters.event_dt_to:
+        _add_clause(clauses, query_params, "c.event_dt <= ?", filters.event_dt_to)
+    if filters.fda_dt_from:
+        _add_clause(clauses, query_params, "c.fda_dt >= ?", filters.fda_dt_from)
+    if filters.fda_dt_to:
+        _add_clause(clauses, query_params, "c.fda_dt <= ?", filters.fda_dt_to)
+    if filters.mfr_dt_from:
+        _add_clause(clauses, query_params, "c.mfr_dt >= ?", filters.mfr_dt_from)
+    if filters.mfr_dt_to:
+        _add_clause(clauses, query_params, "c.mfr_dt <= ?", filters.mfr_dt_to)
 
-    if params.sex_std:
-        _add_clause(clauses, query_params, "c.sex_search = ?", params.sex_std)
-    if params.age_min is not None:
-        _add_clause(clauses, query_params, "c.age >= ?", params.age_min)
-    if params.age_max is not None:
-        _add_clause(clauses, query_params, "c.age <= ?", params.age_max)
-    if params.age_unit:
-        _add_clause(clauses, query_params, "c.age_cod_search = ?", params.age_unit)
-    if params.age_group:
-        _add_clause(clauses, query_params, "c.age_grp_search = ?", params.age_group)
-    if params.weight_min is not None:
-        _add_clause(clauses, query_params, "c.wt_kg >= ?", params.weight_min)
-    if params.weight_max is not None:
-        _add_clause(clauses, query_params, "c.wt_kg <= ?", params.weight_max)
-    if params.reporter_country:
+    if filters.sex_std:
+        _add_clause(clauses, query_params, "c.sex_search = ?", filters.sex_std)
+    if filters.age_min is not None:
+        _add_clause(clauses, query_params, "c.age_years >= ?", filters.age_min)
+    if filters.age_max is not None:
+        _add_clause(clauses, query_params, "c.age_years <= ?", filters.age_max)
+    if filters.age_unit:
+        _add_clause(clauses, query_params, "c.age_cod_search = ?", filters.age_unit)
+    if filters.age_group:
+        _add_clause(clauses, query_params, "c.age_grp_search = ?", filters.age_group)
+    if filters.weight_min is not None:
+        _add_clause(clauses, query_params, "c.wt_kg >= ?", filters.weight_min)
+    if filters.weight_max is not None:
+        _add_clause(clauses, query_params, "c.wt_kg <= ?", filters.weight_max)
+    if filters.reporter_country:
         _add_clause(
             clauses,
             query_params,
             "c.reporter_country_search = ?",
-            params.reporter_country,
+            filters.reporter_country,
         )
 
     return clauses
 
 
-def _build_global_drug_clauses(params, alias: str, query_params: list) -> list[str]:
-    clauses: list[str] = []
-    if params.role_cod:
-        _add_clause(clauses, query_params, f"{alias}.role_cod_search = ?", params.role_cod)
-    if params.route:
-        _add_clause(clauses, query_params, f"{alias}.route_search = ?", params.route)
-    if params.dose_unit:
-        _add_clause(clauses, query_params, f"{alias}.dose_unit_search = ?", params.dose_unit)
-    if params.dose_min is not None:
-        _add_clause(clauses, query_params, f"{alias}.dose_amt >= ?", params.dose_min)
-    if params.dose_max is not None:
-        _add_clause(clauses, query_params, f"{alias}.dose_amt <= ?", params.dose_max)
-    return clauses
-
-
-def _build_term_drug_clauses(
-    term: PrimaryTerm, params, drug_alias: str, query_params: list
+def _build_drug_concept_clauses(
+    term: DrugConcept, alias: str, query_params: list
 ) -> list[str]:
     clauses: list[str] = []
     if term.drug_name:
         _add_clause(
             clauses,
             query_params,
-            f"{drug_alias}.drugname_search LIKE ?",
-            f"%{term.drug_name.upper()}%",
+            f"{alias}.drugname_search LIKE ? ESCAPE '\\'",
+            _like_pattern(term.drug_name),
         )
     if term.prod_ai:
         _add_clause(
             clauses,
             query_params,
-            f"{drug_alias}.prod_ai_search LIKE ?",
-            f"%{term.prod_ai.upper()}%",
+            f"{alias}.prod_ai_search LIKE ? ESCAPE '\\'",
+            _like_pattern(term.prod_ai),
         )
-    clauses.extend(_build_global_drug_clauses(params, drug_alias, query_params))
+    if term.role_cod:
+        _add_clause(clauses, query_params, f"{alias}.role_cod_search = ?", term.role_cod)
+    if term.route:
+        _add_clause(clauses, query_params, f"{alias}.route_search = ?", term.route)
+    if term.dose_unit:
+        _add_clause(clauses, query_params, f"{alias}.dose_unit_search = ?", term.dose_unit)
+    if term.dose_min is not None:
+        _add_clause(clauses, query_params, f"{alias}.dose_amt >= ?", term.dose_min)
+    if term.dose_max is not None:
+        _add_clause(clauses, query_params, f"{alias}.dose_amt <= ?", term.dose_max)
     return clauses
 
 
-def _build_term_indication_clauses(
-    term: PrimaryTerm, indication_alias: str, query_params: list
+def _build_outcome_clauses(params, alias: str, query_params: list) -> list[str]:
+    filters = params.case_filters
+    clauses: list[str] = []
+    if filters.case_outcome:
+        _add_clause(clauses, query_params, f"{alias}.outc_cod_search = ?", filters.case_outcome)
+    return clauses
+
+
+def _build_indication_clauses(
+    term: DrugConcept, alias: str, query_params: list
 ) -> list[str]:
     clauses: list[str] = []
     if term.indication_pt:
         _add_clause(
             clauses,
             query_params,
-            f"{indication_alias}.indi_pt_search LIKE ?",
-            f"%{term.indication_pt.upper()}%",
+            f"{alias}.indi_pt_search LIKE ? ESCAPE '\\'",
+            _like_pattern(term.indication_pt),
         )
     return clauses
 
 
-def _build_reaction_clauses(term: PrimaryTerm, alias: str, query_params: list) -> list[str]:
+def _build_therapy_clauses(
+    term: DrugConcept, alias: str, query_params: list
+) -> list[str]:
+    clauses: list[str] = []
+    if term.therapy_start_from:
+        _add_clause(clauses, query_params, f"{alias}.start_dt >= ?", term.therapy_start_from)
+    if term.therapy_start_to:
+        _add_clause(clauses, query_params, f"{alias}.start_dt <= ?", term.therapy_start_to)
+    if term.therapy_end_from:
+        _add_clause(clauses, query_params, f"{alias}.end_dt >= ?", term.therapy_end_from)
+    if term.therapy_end_to:
+        _add_clause(clauses, query_params, f"{alias}.end_dt <= ?", term.therapy_end_to)
+    if term.dur_min is not None:
+        _add_clause(clauses, query_params, f"{alias}.dur >= ?", term.dur_min)
+    if term.dur_max is not None:
+        _add_clause(clauses, query_params, f"{alias}.dur <= ?", term.dur_max)
+    if term.dur_cod:
+        _add_clause(clauses, query_params, f"{alias}.dur_cod_search = ?", term.dur_cod)
+    return clauses
+
+
+def _build_reaction_concept_clauses(
+    term: ReactionConcept, alias: str, query_params: list
+) -> list[str]:
     clauses: list[str] = []
     if term.reaction_pt:
         _add_clause(
             clauses,
             query_params,
-            f"{alias}.pt_search LIKE ?",
-            f"%{term.reaction_pt.upper()}%",
+            f"{alias}.pt_search LIKE ? ESCAPE '\\'",
+            _like_pattern(term.reaction_pt),
         )
     return clauses
 
 
-def _build_outcome_clauses(params, alias: str, query_params: list) -> list[str]:
-    clauses: list[str] = []
-    if params.case_outcome:
-        _add_clause(clauses, query_params, f"{alias}.outc_cod_search = ?", params.case_outcome)
-    return clauses
-
-
-def _build_therapy_clauses(params, alias: str, query_params: list) -> list[str]:
-    clauses: list[str] = []
-    if params.therapy_start_from:
-        _add_clause(clauses, query_params, f"{alias}.start_dt >= ?", params.therapy_start_from)
-    if params.therapy_start_to:
-        _add_clause(clauses, query_params, f"{alias}.start_dt <= ?", params.therapy_start_to)
-    if params.therapy_end_from:
-        _add_clause(clauses, query_params, f"{alias}.end_dt >= ?", params.therapy_end_from)
-    if params.therapy_end_to:
-        _add_clause(clauses, query_params, f"{alias}.end_dt <= ?", params.therapy_end_to)
-    if params.dur_min is not None:
-        _add_clause(clauses, query_params, f"{alias}.dur >= ?", params.dur_min)
-    if params.dur_max is not None:
-        _add_clause(clauses, query_params, f"{alias}.dur <= ?", params.dur_max)
-    if params.dur_cod:
-        _add_clause(clauses, query_params, f"{alias}.dur_cod_search = ?", params.dur_cod)
-    return clauses
-
-
-def _has_global_drug_filters(params) -> bool:
-    return any(
-        value is not None and value != ""
-        for value in (
-            params.role_cod,
-            params.route,
-            params.dose_unit,
-            params.dose_min,
-            params.dose_max,
-            params.therapy_start_from,
-            params.therapy_start_to,
-            params.therapy_end_from,
-            params.therapy_end_to,
-            params.dur_min,
-            params.dur_max,
-            params.dur_cod,
-        )
-    )
-
-
-def _term_needs_drug_match(term: PrimaryTerm, params) -> bool:
-    return any(
-        value is not None and value != ""
-        for value in (term.drug_name, term.prod_ai, term.indication_pt)
-    ) or _has_global_drug_filters(params)
-
-
-def _build_term_match_parts(params, query_params: list) -> tuple[list[str], str]:
-    terms = params.primary_term_items()
-    if not terms:
-        if not _has_global_drug_filters(params):
-            return [], ""
-        terms = [PrimaryTerm()]
-
+def _build_drug_concept_match(
+    index: int, term: DrugConcept, query_params: list
+) -> tuple[list[str], str] | None:
     ctes: list[str] = []
-    term_cte_names: list[str] = []
+    joins: list[str] = []
+    clauses = _build_drug_concept_clauses(term, "d", query_params)
 
-    for index, term in enumerate(terms):
-        source_ctes: list[tuple[str, str]] = []
-
-        if _term_needs_drug_match(term, params):
-            drug_cte = f"term_{index}_drug_match"
-            joins = []
-            clauses = _build_term_drug_clauses(term, params, "d", query_params)
-
-            indication_clauses = _build_term_indication_clauses(term, "i", query_params)
-            if indication_clauses:
-                joins.append(
-                    """
-                    JOIN latest_indi i ON i.primaryid = d.primaryid
-                        AND i.drug_seq IS NOT DISTINCT FROM d.drug_seq
-                    """
-                )
-                clauses.extend(indication_clauses)
-
-            therapy_clauses = _build_therapy_clauses(params, "th", query_params)
-            if therapy_clauses:
-                joins.append(
-                    """
-                    JOIN latest_ther th ON th.primaryid = d.primaryid
-                        AND th.drug_seq IS NOT DISTINCT FROM d.drug_seq
-                    """
-                )
-                clauses.extend(therapy_clauses)
-
-            ctes.append(
-                f"""
-                {drug_cte} AS MATERIALIZED (
-                    SELECT DISTINCT d.primaryid
-                    FROM latest_drug d
-                    {' '.join(joins)}
-                    {_where(clauses)}
-                )
-                """
-            )
-            source_ctes.append((drug_cte, "dm"))
-
-        reaction_clauses = _build_reaction_clauses(term, "r", query_params)
-        if reaction_clauses:
-            reaction_cte = f"term_{index}_reaction_match"
-            ctes.append(
-                f"""
-                {reaction_cte} AS MATERIALIZED (
-                    SELECT DISTINCT r.primaryid
-                    FROM latest_reac r
-                    {_where(reaction_clauses)}
-                )
-                """
-            )
-            source_ctes.append((reaction_cte, "rm"))
-
-        if not source_ctes:
-            continue
-
-        term_cte = f"term_{index}_match"
-        first_cte, first_alias = source_ctes[0]
-        joins = " ".join(
-            f"JOIN {cte_name} {alias} ON {alias}.primaryid = {first_alias}.primaryid"
-            for cte_name, alias in source_ctes[1:]
-        )
-        ctes.append(
-            f"""
-            {term_cte} AS MATERIALIZED (
-                SELECT DISTINCT {first_alias}.primaryid
-                FROM {first_cte} {first_alias}
-                {joins}
-            )
+    indication_clauses = _build_indication_clauses(term, "i", query_params)
+    if indication_clauses:
+        joins.append(
+            """
+            JOIN latest_indi i ON i.primaryid = d.primaryid
+                AND i.drug_seq IS NOT DISTINCT FROM d.drug_seq
             """
         )
-        term_cte_names.append(term_cte)
+        clauses.extend(indication_clauses)
 
-    if not term_cte_names:
-        return ctes, ""
+    therapy_clauses = _build_therapy_clauses(term, "th", query_params)
+    if therapy_clauses:
+        joins.append(
+            """
+            JOIN latest_ther th ON th.primaryid = d.primaryid
+                AND th.drug_seq IS NOT DISTINCT FROM d.drug_seq
+            """
+        )
+        clauses.extend(therapy_clauses)
 
-    union_parts = [
-        f"SELECT primaryid, {index} AS term_index FROM {cte_name}"
-        for index, cte_name in enumerate(term_cte_names)
-    ]
-    required_count = 1 if params.primary_term_mode == "any" else len(term_cte_names)
+    if not clauses:
+        return None
+
+    cte_name = f"drug_concept_{index}_match"
     ctes.append(
         f"""
-        primary_term_match AS MATERIALIZED (
-            SELECT primaryid
-            FROM ({' UNION ALL '.join(union_parts)}) term_union
-            GROUP BY primaryid
-            HAVING count(DISTINCT term_index) >= {required_count}
+        {cte_name} AS MATERIALIZED (
+            SELECT DISTINCT d.primaryid
+            FROM latest_drug d
+            {' '.join(joins)}
+            {_where(clauses)}
         )
         """
     )
-    return ctes, "JOIN primary_term_match ptm ON ptm.primaryid = c.primaryid"
+    return ctes, cte_name
+
+
+def _build_reaction_concept_match(
+    index: int, term: ReactionConcept, query_params: list
+) -> tuple[list[str], str] | None:
+    clauses = _build_reaction_concept_clauses(term, "r", query_params)
+    if not clauses:
+        return None
+    cte_name = f"reaction_concept_{index}_match"
+    return [
+        f"""
+        {cte_name} AS MATERIALIZED (
+            SELECT DISTINCT r.primaryid
+            FROM latest_reac r
+            {_where(clauses)}
+        )
+        """
+    ], cte_name
+
+
+def _build_concept_match_parts(params, query_params: list) -> tuple[list[str], str]:
+    ctes: list[str] = []
+    concept_cte_names: list[str] = []
+
+    concept_index = 0
+    for term in params.drug_concept_items():
+        result = _build_drug_concept_match(concept_index, term, query_params)
+        if result is None:
+            continue
+        term_ctes, cte_name = result
+        ctes.extend(term_ctes)
+        concept_cte_names.append(cte_name)
+        concept_index += 1
+
+    for term in params.reaction_concept_items():
+        result = _build_reaction_concept_match(concept_index, term, query_params)
+        if result is None:
+            continue
+        term_ctes, cte_name = result
+        ctes.extend(term_ctes)
+        concept_cte_names.append(cte_name)
+        concept_index += 1
+
+    if not concept_cte_names:
+        return ctes, ""
+
+    union_parts = [
+        f"SELECT primaryid, {index} AS concept_index FROM {cte_name}"
+        for index, cte_name in enumerate(concept_cte_names)
+    ]
+    required_count = 1 if params.concept_mode == "any" else len(concept_cte_names)
+    ctes.append(
+        f"""
+        concept_match AS MATERIALIZED (
+            SELECT primaryid
+            FROM ({' UNION ALL '.join(union_parts)}) term_union
+            GROUP BY primaryid
+            HAVING count(DISTINCT concept_index) >= {required_count}
+        )
+        """
+    )
+    return ctes, "JOIN concept_match cm ON cm.primaryid = c.primaryid"
 
 
 def _build_reporter_clauses(params, alias: str, query_params: list) -> list[str]:
+    filters = params.case_filters
     clauses: list[str] = []
-    if params.reporter_type:
-        _add_clause(clauses, query_params, f"{alias}.rpsr_cod_search = ?", params.reporter_type)
+    if filters.reporter_type:
+        _add_clause(clauses, query_params, f"{alias}.rpsr_cod_search = ?", filters.reporter_type)
     return clauses
 
 
@@ -326,10 +312,10 @@ def _build_match_parts(params, query_params: list) -> list[str]:
     ctes: list[str] = []
     joins: list[str] = []
 
-    term_ctes, term_join = _build_term_match_parts(params, query_params)
-    ctes.extend(term_ctes)
-    if term_join:
-        joins.append(term_join)
+    concept_ctes, concept_join = _build_concept_match_parts(params, query_params)
+    ctes.extend(concept_ctes)
+    if concept_join:
+        joins.append(concept_join)
 
     child_specs = [
         ("outc_match", "om", "latest_outc", "o", _build_outcome_clauses),
@@ -371,11 +357,32 @@ def _with_clause(parts: list[str]) -> str:
     return "WITH " + ",\n".join(parts)
 
 
-def search_cases(params: CaseSearchParams) -> dict:
+def _case_summary_result(params: CaseSearchRequest, *, paginate: bool) -> dict:
     """Search latest cases with compact match sets and case summaries."""
     _ensure_query_warehouse()
     query_params: list = []
     match_parts = _build_match_parts(params, query_params)
+    page_params = [*query_params]
+
+    if paginate:
+        paged_cte = f"""
+            paged AS MATERIALIZED (
+                SELECT primaryid, source_quarter, total
+                FROM matched_with_total
+                ORDER BY source_quarter DESC, primaryid DESC
+                LIMIT ${len(query_params) + 1}
+                OFFSET ${len(query_params) + 2}
+            )
+        """
+        page_params.extend([params.limit, params.offset])
+    else:
+        paged_cte = """
+            paged AS MATERIALIZED (
+                SELECT primaryid, source_quarter, total
+                FROM matched_with_total
+                ORDER BY source_quarter DESC, primaryid DESC
+            )
+        """
 
     data_sql = f"""
         {_with_clause([
@@ -389,15 +396,7 @@ def search_cases(params: CaseSearchParams) -> dict:
                 FROM matched
             )
             ''',
-            f'''
-            paged AS MATERIALIZED (
-                SELECT primaryid, source_quarter, total
-                FROM matched_with_total
-                ORDER BY source_quarter DESC, primaryid DESC
-                LIMIT ${len(query_params) + 1}
-                OFFSET ${len(query_params) + 2}
-            )
-            ''',
+            paged_cte,
             '''
             drug_lists AS MATERIALIZED (
                 SELECT
@@ -500,7 +499,6 @@ def search_cases(params: CaseSearchParams) -> dict:
 
     conn = get_conn()
     try:
-        page_params = [*query_params, params.limit, params.offset]
         rows = conn.execute(data_sql, page_params).fetchall()
         columns = [desc[0] for desc in conn.description][1:]
         if rows:
@@ -519,10 +517,20 @@ def search_cases(params: CaseSearchParams) -> dict:
 
     return {
         "total": total,
-        "limit": params.limit,
-        "offset": params.offset,
+        "limit": params.limit if paginate else total,
+        "offset": params.offset if paginate else 0,
         "items": items,
     }
+
+
+def search_cases(params: CaseSearchRequest) -> dict:
+    """Search latest cases with pagination for interactive browsing."""
+    return _case_summary_result(params, paginate=True)
+
+
+def export_cases(params: CaseSearchRequest) -> dict:
+    """Return every latest case matching the supplied filters."""
+    return _case_summary_result(params, paginate=False)
 
 
 def get_filter_metadata() -> dict:

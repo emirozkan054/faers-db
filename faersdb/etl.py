@@ -679,6 +679,17 @@ def build_query_tables(
             """
                 SELECT
                     * EXCLUDE (_rn),
+                    CASE upper(coalesce(age_cod, ''))
+                        WHEN 'YR' THEN age
+                        WHEN 'DEC' THEN age * 10
+                        WHEN 'MON' THEN age / 12
+                        WHEN 'WK' THEN age / 52.1775
+                        WHEN 'DY' THEN age / 365.25
+                        WHEN 'HR' THEN age / 8766
+                        WHEN 'MIN' THEN age / 525960
+                        WHEN 'SEC' THEN age / 31557600
+                        ELSE NULL
+                    END AS age_years,
                     upper(coalesce(report_type, '')) AS report_type_search,
                     upper(coalesce(i_f_code, '')) AS i_f_code_search,
                     upper(coalesce(sex, '')) AS sex_search,
@@ -814,15 +825,7 @@ def build_query_tables(
                     ld.age_cod AS age_unit,
                     ld.age_grp AS age_group,
                     ld.wt_kg AS weight_kg,
-                    ld.reporter_country,
-                    CAST([] AS VARCHAR[]) AS drugs,
-                    CAST([] AS VARCHAR[]) AS active_ingredients,
-                    CAST([] AS VARCHAR[]) AS role_codes,
-                    CAST([] AS VARCHAR[]) AS routes,
-                    CAST([] AS VARCHAR[]) AS indications,
-                    CAST([] AS VARCHAR[]) AS reactions,
-                    CAST([] AS VARCHAR[]) AS outcomes,
-                    CAST([] AS VARCHAR[]) AS reporter_types
+                    ld.reporter_country
                 FROM latest_demo ld
             """,
             warehouse_dir / "case_summary.parquet",
@@ -836,42 +839,42 @@ def build_query_tables(
                     coalesce((SELECT list(source_quarter ORDER BY source_quarter)
                         FROM (SELECT DISTINCT source_quarter FROM latest_demo
                               WHERE source_quarter IS NOT NULL)), CAST([] AS VARCHAR[])) AS quarters,
-                    coalesce((SELECT list(report_type ORDER BY report_type)
-                        FROM (SELECT DISTINCT report_type FROM latest_demo
-                              WHERE report_type IS NOT NULL)), CAST([] AS VARCHAR[])) AS report_types,
-                    coalesce((SELECT list(i_f_code ORDER BY i_f_code)
-                        FROM (SELECT DISTINCT i_f_code FROM latest_demo
-                              WHERE i_f_code IS NOT NULL)), CAST([] AS VARCHAR[])) AS initial_or_followup_values,
-                    coalesce((SELECT list(sex ORDER BY sex)
-                        FROM (SELECT DISTINCT sex FROM latest_demo
-                              WHERE sex IS NOT NULL)), CAST([] AS VARCHAR[])) AS sex_values,
-                    coalesce((SELECT list(age_cod ORDER BY age_cod)
-                        FROM (SELECT DISTINCT age_cod FROM latest_demo
-                              WHERE age_cod IS NOT NULL)), CAST([] AS VARCHAR[])) AS age_units,
-                    coalesce((SELECT list(age_grp ORDER BY age_grp)
-                        FROM (SELECT DISTINCT age_grp FROM latest_demo
-                              WHERE age_grp IS NOT NULL)), CAST([] AS VARCHAR[])) AS age_groups,
-                    coalesce((SELECT list(reporter_country ORDER BY reporter_country)
-                        FROM (SELECT DISTINCT reporter_country FROM latest_demo
-                              WHERE reporter_country IS NOT NULL)), CAST([] AS VARCHAR[])) AS reporter_countries,
-                    coalesce((SELECT list(role_cod ORDER BY role_cod)
-                        FROM (SELECT DISTINCT role_cod FROM latest_drug
-                              WHERE role_cod IS NOT NULL)), CAST([] AS VARCHAR[])) AS role_codes,
-                    coalesce((SELECT list(route ORDER BY route)
-                        FROM (SELECT DISTINCT route FROM latest_drug
-                              WHERE route IS NOT NULL)), CAST([] AS VARCHAR[])) AS routes,
-                    coalesce((SELECT list(dose_unit ORDER BY dose_unit)
-                        FROM (SELECT DISTINCT dose_unit FROM latest_drug
-                              WHERE dose_unit IS NOT NULL)), CAST([] AS VARCHAR[])) AS dose_units,
-                    coalesce((SELECT list(outc_cod ORDER BY outc_cod)
-                        FROM (SELECT DISTINCT outc_cod FROM latest_outc
-                              WHERE outc_cod IS NOT NULL)), CAST([] AS VARCHAR[])) AS case_outcomes,
-                    coalesce((SELECT list(rpsr_cod ORDER BY rpsr_cod)
-                        FROM (SELECT DISTINCT rpsr_cod FROM latest_rpsr
-                              WHERE rpsr_cod IS NOT NULL)), CAST([] AS VARCHAR[])) AS reporter_types,
-                    coalesce((SELECT list(dur_cod ORDER BY dur_cod)
-                        FROM (SELECT DISTINCT dur_cod FROM latest_ther
-                              WHERE dur_cod IS NOT NULL)), CAST([] AS VARCHAR[])) AS dur_codes
+                    coalesce((SELECT list(report_type_search ORDER BY report_type_search)
+                        FROM (SELECT DISTINCT report_type_search FROM latest_demo
+                              WHERE report_type_search <> '')), CAST([] AS VARCHAR[])) AS report_types,
+                    coalesce((SELECT list(i_f_code_search ORDER BY i_f_code_search)
+                        FROM (SELECT DISTINCT i_f_code_search FROM latest_demo
+                              WHERE i_f_code_search <> '')), CAST([] AS VARCHAR[])) AS initial_or_followup_values,
+                    coalesce((SELECT list(sex_search ORDER BY sex_search)
+                        FROM (SELECT DISTINCT sex_search FROM latest_demo
+                              WHERE sex_search <> '')), CAST([] AS VARCHAR[])) AS sex_values,
+                    coalesce((SELECT list(age_cod_search ORDER BY age_cod_search)
+                        FROM (SELECT DISTINCT age_cod_search FROM latest_demo
+                              WHERE age_cod_search <> '')), CAST([] AS VARCHAR[])) AS age_units,
+                    coalesce((SELECT list(age_grp_search ORDER BY age_grp_search)
+                        FROM (SELECT DISTINCT age_grp_search FROM latest_demo
+                              WHERE age_grp_search <> '')), CAST([] AS VARCHAR[])) AS age_groups,
+                    coalesce((SELECT list(reporter_country_search ORDER BY reporter_country_search)
+                        FROM (SELECT DISTINCT reporter_country_search FROM latest_demo
+                              WHERE reporter_country_search <> '')), CAST([] AS VARCHAR[])) AS reporter_countries,
+                    coalesce((SELECT list(role_cod_search ORDER BY role_cod_search)
+                        FROM (SELECT DISTINCT role_cod_search FROM latest_drug
+                              WHERE role_cod_search <> '')), CAST([] AS VARCHAR[])) AS role_codes,
+                    coalesce((SELECT list(route_search ORDER BY route_search)
+                        FROM (SELECT DISTINCT route_search FROM latest_drug
+                              WHERE route_search <> '')), CAST([] AS VARCHAR[])) AS routes,
+                    coalesce((SELECT list(dose_unit_search ORDER BY dose_unit_search)
+                        FROM (SELECT DISTINCT dose_unit_search FROM latest_drug
+                              WHERE dose_unit_search <> '')), CAST([] AS VARCHAR[])) AS dose_units,
+                    coalesce((SELECT list(outc_cod_search ORDER BY outc_cod_search)
+                        FROM (SELECT DISTINCT outc_cod_search FROM latest_outc
+                              WHERE outc_cod_search <> '')), CAST([] AS VARCHAR[])) AS case_outcomes,
+                    coalesce((SELECT list(rpsr_cod_search ORDER BY rpsr_cod_search)
+                        FROM (SELECT DISTINCT rpsr_cod_search FROM latest_rpsr
+                              WHERE rpsr_cod_search <> '')), CAST([] AS VARCHAR[])) AS reporter_types,
+                    coalesce((SELECT list(dur_cod_search ORDER BY dur_cod_search)
+                        FROM (SELECT DISTINCT dur_cod_search FROM latest_ther
+                              WHERE dur_cod_search <> '')), CAST([] AS VARCHAR[])) AS dur_codes
             """,
             warehouse_dir / "filter_metadata.parquet",
         )

@@ -1,4 +1,3 @@
-import json
 from datetime import date
 from typing import Literal
 
@@ -32,118 +31,17 @@ class DemographicFilters(BaseModel):
     reporter_country: str | None = Field(default=None, max_length=20)
 
 
-class DrugFilters(BaseModel):
-    drug_name: str | None = Field(default=None, max_length=200)
-    prod_ai: str | None = Field(default=None, max_length=200)
-    role_cod: str | None = Field(default=None, max_length=20)
-    route: str | None = Field(default=None, max_length=100)
-    dose_unit: str | None = Field(default=None, max_length=40)
-    dose_min: float | None = Field(default=None, ge=0)
-    dose_max: float | None = Field(default=None, ge=0)
-
-
-class PrimaryTerm(BaseModel):
-    drug_name: str | None = Field(default=None, max_length=200)
-    prod_ai: str | None = Field(default=None, max_length=200)
-    reaction_pt: str | None = Field(default=None, max_length=200)
-    indication_pt: str | None = Field(default=None, max_length=200)
-
-    @field_validator(
-        "drug_name",
-        "prod_ai",
-        "reaction_pt",
-        "indication_pt",
-        mode="before",
-    )
-    @classmethod
-    def normalize_search_text(cls, value: str | None):
-        if value is None:
-            return None
-        cleaned = str(value).strip()
-        return cleaned or None
-
-    def has_filters(self) -> bool:
-        return any(
-            value is not None and value != ""
-            for value in (
-                self.drug_name,
-                self.prod_ai,
-                self.reaction_pt,
-                self.indication_pt,
-            )
-        )
-
-
-class ReactionFilters(BaseModel):
-    reaction_pt: str | None = Field(default=None, max_length=200)
+class CaseFilters(CaseTimeFilters, DemographicFilters):
     case_outcome: str | None = Field(default=None, max_length=20)
-
-
-class TherapyIndicationFilters(BaseModel):
-    indication_pt: str | None = Field(default=None, max_length=200)
-    therapy_start_from: date | None = None
-    therapy_start_to: date | None = None
-    therapy_end_from: date | None = None
-    therapy_end_to: date | None = None
-    dur_min: int | None = Field(default=None, ge=0)
-    dur_max: int | None = Field(default=None, ge=0)
-    dur_cod: str | None = Field(default=None, max_length=20)
-
-
-class ReporterFilters(BaseModel):
     reporter_type: str | None = Field(default=None, max_length=50)
-
-
-class ResearchFilterParams(
-    CaseTimeFilters,
-    DemographicFilters,
-    DrugFilters,
-    ReactionFilters,
-    TherapyIndicationFilters,
-    ReporterFilters,
-):
-    limit: int = Field(default=25, ge=1, le=100)
-    offset: int = Field(default=0, ge=0, le=10_000)
-    primary_terms: str | None = Field(default=None, max_length=20_000)
-    primary_term_mode: Literal["any", "all"] = "any"
-
-    @field_validator(
-        "drug_name",
-        "prod_ai",
-        "reaction_pt",
-        "indication_pt",
-        mode="before",
-    )
-    @classmethod
-    def normalize_search_text(cls, value: str | None):
-        if value is None:
-            return None
-        cleaned = value.strip()
-        return cleaned or None
-
-    @field_validator("primary_terms", mode="before")
-    @classmethod
-    def normalize_primary_terms_json(cls, value: str | None):
-        if value is None:
-            return None
-        cleaned = str(value).strip()
-        return cleaned or None
 
     @field_validator("quarter", mode="before")
     @classmethod
     def normalize_quarter(cls, value: str | None):
         if value is None:
             return None
-        cleaned = value.strip().lower()
-        return cleaned or None
-
-    @field_validator("primary_term_mode", mode="before")
-    @classmethod
-    def normalize_primary_term_mode(cls, value: str | None):
-        if value is None:
-            return "any"
         cleaned = str(value).strip().lower()
-        return cleaned or "any"
+        return cleaned or None
 
     @field_validator(
         "report_type",
@@ -152,11 +50,7 @@ class ResearchFilterParams(
         "age_unit",
         "age_group",
         "reporter_country",
-        "role_cod",
-        "route",
-        "dose_unit",
         "case_outcome",
-        "dur_cod",
         "reporter_type",
         mode="before",
     )
@@ -164,108 +58,170 @@ class ResearchFilterParams(
     def normalize_enum_text(cls, value: str | None):
         if value is None:
             return None
-        cleaned = value.strip().upper()
+        cleaned = str(value).strip().upper()
         return cleaned or None
 
-    def primary_term_items(self) -> list[PrimaryTerm]:
-        terms: list[PrimaryTerm] = []
-
-        if self.primary_terms:
-            payload = json.loads(self.primary_terms)
-            if not isinstance(payload, list):
-                raise ValueError("primary_terms must be a JSON array.")
-            for item in payload:
-                if not isinstance(item, dict):
-                    raise ValueError("Each primary term must be an object.")
-                allowed = {
-                    "drug_name": item.get("drug_name"),
-                    "prod_ai": item.get("prod_ai"),
-                    "reaction_pt": item.get("reaction_pt"),
-                    "indication_pt": item.get("indication_pt"),
-                }
-                term = PrimaryTerm.model_validate(allowed)
-                if term.has_filters():
-                    terms.append(term)
-
-        if not terms and not self.primary_terms:
-            legacy = PrimaryTerm(
-                drug_name=self.drug_name,
-                prod_ai=self.prod_ai,
-                reaction_pt=self.reaction_pt,
-                indication_pt=self.indication_pt,
+    def has_filters(self) -> bool:
+        return any(
+            value is not None and value != ""
+            for value in (
+                self.quarter,
+                self.report_type,
+                self.initial_or_followup,
+                self.event_dt_from,
+                self.event_dt_to,
+                self.fda_dt_from,
+                self.fda_dt_to,
+                self.mfr_dt_from,
+                self.mfr_dt_to,
+                self.sex_std,
+                self.age_min,
+                self.age_max,
+                self.age_unit,
+                self.age_group,
+                self.weight_min,
+                self.weight_max,
+                self.reporter_country,
+                self.case_outcome,
+                self.reporter_type,
             )
-            if legacy.has_filters():
-                terms.append(legacy)
+        )
 
-        return terms
+
+class DrugConcept(BaseModel):
+    drug_name: str | None = Field(default=None, max_length=200)
+    prod_ai: str | None = Field(default=None, max_length=200)
+    indication_pt: str | None = Field(default=None, max_length=200)
+    role_cod: str | None = Field(default=None, max_length=20)
+    route: str | None = Field(default=None, max_length=100)
+    dose_unit: str | None = Field(default=None, max_length=40)
+    dose_min: float | None = Field(default=None, ge=0)
+    dose_max: float | None = Field(default=None, ge=0)
+    therapy_start_from: date | None = None
+    therapy_start_to: date | None = None
+    therapy_end_from: date | None = None
+    therapy_end_to: date | None = None
+    dur_min: int | None = Field(default=None, ge=0)
+    dur_max: int | None = Field(default=None, ge=0)
+    dur_cod: str | None = Field(default=None, max_length=20)
+
+    @field_validator("drug_name", "prod_ai", "indication_pt", mode="before")
+    @classmethod
+    def normalize_search_text(cls, value: str | None):
+        if value is None:
+            return None
+        cleaned = str(value).strip()
+        return cleaned or None
+
+    @field_validator("role_cod", "route", "dose_unit", "dur_cod", mode="before")
+    @classmethod
+    def normalize_enum_text(cls, value: str | None):
+        if value is None:
+            return None
+        cleaned = str(value).strip().upper()
+        return cleaned or None
+
+    def has_filters(self) -> bool:
+        return any(
+            value is not None and value != ""
+            for value in (
+                self.drug_name,
+                self.prod_ai,
+                self.indication_pt,
+                self.role_cod,
+                self.route,
+                self.dose_unit,
+                self.dose_min,
+                self.dose_max,
+                self.therapy_start_from,
+                self.therapy_start_to,
+                self.therapy_end_from,
+                self.therapy_end_to,
+                self.dur_min,
+                self.dur_max,
+                self.dur_cod,
+            )
+        )
+
+
+class ReactionConcept(BaseModel):
+    reaction_pt: str | None = Field(default=None, max_length=200)
+
+    @field_validator("reaction_pt", mode="before")
+    @classmethod
+    def normalize_search_text(cls, value: str | None):
+        if value is None:
+            return None
+        cleaned = str(value).strip()
+        return cleaned or None
+
+    def has_filters(self) -> bool:
+        return self.reaction_pt is not None and self.reaction_pt != ""
+
+
+class CaseSearchRequest(BaseModel):
+    drug_terms: list[DrugConcept] = Field(default_factory=list, max_length=50)
+    reaction_terms: list[ReactionConcept] = Field(default_factory=list, max_length=50)
+    concept_mode: Literal["any", "all"] = "any"
+    case_filters: CaseFilters = Field(default_factory=CaseFilters)
+    limit: int = Field(default=25, ge=1, le=100)
+    offset: int = Field(default=0, ge=0, le=10_000)
+
+    @field_validator("concept_mode", mode="before")
+    @classmethod
+    def normalize_concept_mode(cls, value: str | None):
+        if value is None:
+            return "any"
+        cleaned = str(value).strip().lower()
+        return cleaned or "any"
+
+    def drug_concept_items(self) -> list[DrugConcept]:
+        return [term for term in self.drug_terms if term.has_filters()]
+
+    def reaction_concept_items(self) -> list[ReactionConcept]:
+        return [term for term in self.reaction_terms if term.has_filters()]
 
     def validation_errors(self) -> list[str]:
         errors: list[str] = []
-        range_pairs = [
+        case_range_pairs = [
             ("age_min", "age_max"),
             ("weight_min", "weight_max"),
-            ("dose_min", "dose_max"),
-            ("dur_min", "dur_max"),
             ("event_dt_from", "event_dt_to"),
             ("fda_dt_from", "fda_dt_to"),
             ("mfr_dt_from", "mfr_dt_to"),
+        ]
+        for lower_name, upper_name in case_range_pairs:
+            lower = getattr(self.case_filters, lower_name)
+            upper = getattr(self.case_filters, upper_name)
+            if lower is not None and upper is not None and lower > upper:
+                errors.append(
+                    f"case_filters.{lower_name} must be less than or equal to "
+                    f"case_filters.{upper_name}"
+                )
+
+        drug_range_pairs = [
+            ("dose_min", "dose_max"),
+            ("dur_min", "dur_max"),
             ("therapy_start_from", "therapy_start_to"),
             ("therapy_end_from", "therapy_end_to"),
         ]
-        for lower_name, upper_name in range_pairs:
-            lower = getattr(self, lower_name)
-            upper = getattr(self, upper_name)
-            if lower is not None and upper is not None and lower > upper:
-                errors.append(f"{lower_name} must be less than or equal to {upper_name}")
+        for index, term in enumerate(self.drug_terms):
+            for lower_name, upper_name in drug_range_pairs:
+                lower = getattr(term, lower_name)
+                upper = getattr(term, upper_name)
+                if lower is not None and upper is not None and lower > upper:
+                    errors.append(
+                        f"drug_terms[{index}].{lower_name} must be less than or "
+                        f"equal to drug_terms[{index}].{upper_name}"
+                    )
 
-        try:
-            primary_terms = self.primary_term_items()
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            primary_terms = []
-            errors.append(f"primary_terms is invalid: {exc}")
-
-        filter_values = [
-            self.quarter,
-            self.report_type,
-            self.initial_or_followup,
-            self.event_dt_from,
-            self.event_dt_to,
-            self.fda_dt_from,
-            self.fda_dt_to,
-            self.mfr_dt_from,
-            self.mfr_dt_to,
-            self.sex_std,
-            self.age_min,
-            self.age_max,
-            self.age_unit,
-            self.age_group,
-            self.weight_min,
-            self.weight_max,
-            self.reporter_country,
-            self.role_cod,
-            self.route,
-            self.dose_unit,
-            self.dose_min,
-            self.dose_max,
-            self.case_outcome,
-            self.therapy_start_from,
-            self.therapy_start_to,
-            self.therapy_end_from,
-            self.therapy_end_to,
-            self.dur_min,
-            self.dur_max,
-            self.dur_cod,
-            self.reporter_type,
-        ]
-        if not primary_terms and not any(
-            value is not None and value != "" for value in filter_values
+        if (
+            not self.drug_concept_items()
+            and not self.reaction_concept_items()
+            and not self.case_filters.has_filters()
         ):
             errors.append("Provide at least one filter before searching.")
         return errors
-
-
-class CaseSearchParams(ResearchFilterParams):
-    limit: int = Field(default=25, ge=1, le=100)
 
 
 class CaseSummary(BaseModel):

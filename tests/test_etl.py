@@ -151,8 +151,8 @@ def test_build_query_tables_keeps_latest_non_deleted_cases(tmp_path):
                 date(2024, 3, 15),
                 date(2024, 4, 15),
             ],
-            "age": [45.0, 46.0, 60.0, 52.0],
-            "age_cod": ["YR", "YR", "YR", "YR"],
+            "age": [45.0, 46.0, 60.0, 6.0],
+            "age_cod": ["YR", "YR", "YR", "MON"],
             "age_grp": ["A", "A", "E", "A"],
             "sex": ["M", "M", "F", "F"],
             "wt_kg": [80.0, 82.0, 70.0, 65.0],
@@ -234,6 +234,7 @@ def test_build_query_tables_keeps_latest_non_deleted_cases(tmp_path):
     latest_demo = pl.read_parquet(warehouse / "latest_demo.parquet").sort("primaryid")
     assert latest_demo["primaryid"].to_list() == ["1002", "1004"]
     assert latest_demo["caseversion"].to_list() == [2, 1]
+    assert latest_demo["age_years"].to_list() == pytest.approx([46.0, 0.5])
 
     latest_drug = pl.read_parquet(warehouse / "latest_drug.parquet").sort("primaryid")
     assert latest_drug["primaryid"].to_list() == ["1002", "1004"]
@@ -244,5 +245,5 @@ def test_build_query_tables_keeps_latest_non_deleted_cases(tmp_path):
         0, named=True
     )
     assert aspirin_summary["canonical_case_id"] == "FAERS:2001"
-    assert aspirin_summary["drugs"] == []
-    assert aspirin_summary["reactions"] == []
+    assert "drugs" not in summary.columns
+    assert "reactions" not in summary.columns

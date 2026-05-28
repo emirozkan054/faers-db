@@ -24,15 +24,19 @@ def test_app_shell_is_served():
     assert "Export Aggregates CSV" not in response.text
     assert "Export Aggregate Report JSON" not in response.text
     assert "Show Aggregates" not in response.text
-    assert "Match terms" in response.text
-    assert "Add Term" in response.text
+    assert "Concepts" in response.text
+    assert "Match concepts" in response.text
+    assert "Add Drug Concept" in response.text
+    assert "Add Reaction Concept" in response.text
+    assert "Drug And Therapy" not in response.text
     assert "Reaction outcome" not in response.text
     assert "Case And Time" in response.text
     assert "Outcomes And Reporter" in response.text
-    assert "Saved Searches" in response.text
-    assert "Save Current Search" in response.text
-    assert "Search name" in response.text
+    assert "Saved Searches" not in response.text
+    assert "Save Current Search" not in response.text
+    assert "Search name" not in response.text
     assert "No active cohort yet." in response.text
+    assert response.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
 
 
 def test_static_app_javascript_is_served():
@@ -43,17 +47,24 @@ def test_static_app_javascript_is_served():
     assert "runCaseSearch" in response.text
     assert "/cases/search" in response.text
     assert "/aggregates/drug-reactions" not in response.text
-    assert "primary_terms" in response.text
+    assert "drug_terms" in response.text
+    assert "reaction_terms" in response.text
+    assert "concept_mode" in response.text
+    assert "primary_terms" not in response.text
     assert "Active ingredients" in response.text
     assert "reaction_outcome" not in response.text
     assert "downloadCsv" in response.text
     assert "downloadJson" in response.text
+    assert "/cases/export" in response.text
+    assert "Exported current case results" not in response.text
     assert "clearFilters" in response.text
     assert "/filters/metadata" in response.text
     assert "loadFilterMetadata" in response.text
-    assert "localStorage" in response.text
+    assert "localStorage" not in response.text
     assert "history.replaceState" in response.text
     assert "window.location.search" in response.text
-    assert "saveCurrentSearch" in response.text
+    assert "q" in response.text
+    assert "saveCurrentSearch" not in response.text
     assert "hydrateFromUrl" in response.text
     assert "await loadCaseDetail(payload.items[0].case_version_pk)" not in response.text
+    assert response.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"

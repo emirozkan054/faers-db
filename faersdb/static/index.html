@@ -135,6 +135,13 @@
       padding: 0 14px 14px;
     }
 
+    .concept-heading {
+      margin: 0;
+      padding: 0 14px 8px;
+      font-size: 14px;
+      color: var(--muted);
+    }
+
     .term-row {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
@@ -295,29 +302,6 @@
       margin-bottom: 10px;
     }
 
-    .saved-search-item {
-      display: grid;
-      gap: 8px;
-      padding: 10px;
-      border: 1px solid rgba(148, 163, 184, 0.14);
-      border-radius: 12px;
-      background: var(--panel-softer);
-    }
-
-    .saved-search-item strong {
-      display: block;
-    }
-
-    .saved-search-item .hint {
-      font-size: 12px;
-      margin: 0;
-    }
-
-    .saved-search-empty {
-      color: var(--muted);
-      font-size: 14px;
-    }
-
     button:disabled {
       opacity: 0.55;
       cursor: not-allowed;
@@ -361,7 +345,7 @@
     <section class="hero">
       <div class="hero-copy">
         <h1>FAERS Research UI</h1>
-        <p>Use grouped faceted filters to search the latest non-deleted FAERS cases across demographics, case metadata, drug attributes, reactions, outcomes, therapy, and reporter information.</p>
+        <p>Use concept-scoped filters to search the latest non-deleted FAERS cases across drug rows, drug-linked indications and therapy, case-level reactions, demographics, outcomes, and reporter information.</p>
       </div>
       <div class="actions">
         <a class="button-link secondary" href="/docs" target="_blank" rel="noreferrer">API Docs</a>
@@ -381,18 +365,24 @@
         <p class="small-note">Provide at least one filter. Search results stay paginated and exportable for laptop-sized workflows.</p>
         <form id="search-form" class="filter-stack">
           <details open>
-            <summary>Primary Terms</summary>
+            <summary>Concepts</summary>
             <div class="term-controls">
               <label class="term-mode">
-                Match terms
-                <select id="primary-term-mode" name="primary_term_mode">
-                  <option value="any">Any term</option>
-                  <option value="all">All terms</option>
+                Match concepts
+                <select id="concept-mode">
+                  <option value="any">Any concept</option>
+                  <option value="all">All concepts</option>
                 </select>
               </label>
-              <button id="add-primary-term" type="button" class="secondary">Add Term</button>
+              <div class="actions">
+                <button id="add-drug-term" type="button" class="secondary">Add Drug Concept</button>
+                <button id="add-reaction-term" type="button" class="secondary">Add Reaction Concept</button>
+              </div>
             </div>
-            <div id="primary-terms" class="term-list"></div>
+            <h3 class="concept-heading">Drug Concepts</h3>
+            <div id="drug-terms" class="term-list"></div>
+            <h3 class="concept-heading">Reaction Concepts</h3>
+            <div id="reaction-terms" class="term-list"></div>
           </details>
 
           <details open>
@@ -426,6 +416,14 @@
                 FDA date to
                 <input id="fda-dt-to" name="fda_dt_to" type="date">
               </label>
+              <label>
+                Manufacturer date from
+                <input id="mfr-dt-from" name="mfr_dt_from" type="date">
+              </label>
+              <label>
+                Manufacturer date to
+                <input id="mfr-dt-to" name="mfr_dt_to" type="date">
+              </label>
             </div>
           </details>
 
@@ -445,34 +443,24 @@
                 <input id="age-max" name="age_max" type="number" min="0" step="0.1">
               </label>
               <label>
+                Original age unit
+                <select id="age-unit" name="age_unit"></select>
+              </label>
+              <label>
                 Age group
                 <select id="age-group" name="age_group"></select>
               </label>
               <label>
+                Weight minimum
+                <input id="weight-min" name="weight_min" type="number" min="0" step="0.1">
+              </label>
+              <label>
+                Weight maximum
+                <input id="weight-max" name="weight_max" type="number" min="0" step="0.1">
+              </label>
+              <label>
                 Reporter country
                 <input id="reporter-country" name="reporter_country" placeholder="US">
-              </label>
-            </div>
-          </details>
-
-          <details>
-            <summary>Drug And Therapy</summary>
-            <div class="filter-group">
-              <label>
-                Role code
-                <select id="role-cod" name="role_cod"></select>
-              </label>
-              <label>
-                Route
-                <select id="route" name="route"></select>
-              </label>
-              <label>
-                Therapy start from
-                <input id="therapy-start-from" name="therapy_start_from" type="date">
-              </label>
-              <label>
-                Therapy end to
-                <input id="therapy-end-to" name="therapy_end_to" type="date">
               </label>
             </div>
           </details>
@@ -514,21 +502,6 @@
 
       <aside class="panel">
         <section>
-          <div class="toolbar">
-            <h2>Saved Searches</h2>
-            <button id="save-search" type="button" class="secondary">Save Current Search</button>
-          </div>
-          <label>
-            Search name
-            <input id="saved-search-name" placeholder="e.g. Aspirin headache cohort">
-          </label>
-          <p class="small-note">Saved searches stay in this browser only. Saving with the same name overwrites the older entry.</p>
-          <div id="saved-searches-list" class="stack">
-            <p class="saved-search-empty">No saved searches yet.</p>
-          </div>
-        </section>
-
-        <section class="section">
         <h2>Case Detail</h2>
         <div id="case-detail" class="stack">
           <p class="empty-state">Select a case from the table to inspect its linked drugs, reactions, outcomes, and metadata.</p>

@@ -23,6 +23,9 @@ QUERY_WAREHOUSE_TABLES = (
 )
 WAREHOUSE_TABLES = (*RAW_WAREHOUSE_TABLES, *QUERY_WAREHOUSE_TABLES)
 REQUIRED_QUERY_TABLES = frozenset(QUERY_WAREHOUSE_TABLES)
+REQUIRED_QUERY_TABLE_COLUMNS = {
+    "latest_demo": ("age_years",),
+}
 
 
 def _sql_string(value: str) -> str:
@@ -43,11 +46,34 @@ def _register_warehouse(conn: duckdb.DuckDBPyConnection, warehouse_dir: Path) ->
 def missing_query_tables(warehouse_dir: Path | None = None) -> list[str]:
     """Return required derived query tables missing from the warehouse."""
     root = warehouse_dir or settings.warehouse_path
-    return [
+    missing = [
         table_name
         for table_name in QUERY_WAREHOUSE_TABLES
         if not (root / f"{table_name}.parquet").exists()
     ]
+    for table_name, required_columns in REQUIRED_QUERY_TABLE_COLUMNS.items():
+        parquet_path = root / f"{table_name}.parquet"
+        if not parquet_path.exists():
+            continue
+        conn = duckdb.connect(database=":memory:")
+        try:
+            columns = {
+                row[0]
+                for row in conn.execute(
+                    "DESCRIBE SELECT * FROM read_parquet(?)", [str(parquet_path)]
+                ).fetchall()
+            }
+        except duckdb.Error:
+            missing.append(table_name)
+            continue
+        finally:
+            conn.close()
+        missing.extend(
+            f"{table_name}.{column}"
+            for column in required_columns
+            if column not in columns
+        )
+    return missing
 
 
 def get_conn() -> duckdb.DuckDBPyConnection:

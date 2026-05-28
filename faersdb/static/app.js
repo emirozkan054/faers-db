@@ -5,49 +5,92 @@ const caseFilterSummaryEl = document.getElementById("case-filter-summary");
 const caseResultsEl = document.getElementById("case-results");
 const casePagerEl = document.getElementById("case-pager");
 const caseDetailEl = document.getElementById("case-detail");
-const savedSearchNameEl = document.getElementById("saved-search-name");
-const savedSearchListEl = document.getElementById("saved-searches-list");
 const searchForm = document.getElementById("search-form");
-const primaryTermsEl = document.getElementById("primary-terms");
-const primaryTermModeEl = document.getElementById("primary-term-mode");
-const addPrimaryTermButton = document.getElementById("add-primary-term");
+const conceptModeEl = document.getElementById("concept-mode");
+const drugTermsEl = document.getElementById("drug-terms");
+const reactionTermsEl = document.getElementById("reaction-terms");
+const addDrugTermButton = document.getElementById("add-drug-term");
+const addReactionTermButton = document.getElementById("add-reaction-term");
 const clearFiltersButton = document.getElementById("clear-filters");
-const saveSearchButton = document.getElementById("save-search");
 const exportCasesButton = document.getElementById("export-cases");
 const exportCaseReportButton = document.getElementById("export-case-report");
 
 const DEFAULT_LIMIT = 25;
-const SAVED_SEARCH_STORAGE_KEY = "faersdb.savedSearches.v1";
 const SEARCH_MODE = "cases";
-const TERM_FIELDS = ["drug_name", "prod_ai", "reaction_pt", "indication_pt"];
-const TERM_FIELD_CONFIG = {
+
+const DRUG_TERM_FIELDS = [
+  "drug_name",
+  "prod_ai",
+  "indication_pt",
+  "role_cod",
+  "route",
+  "dose_min",
+  "dose_max",
+  "dose_unit",
+  "therapy_start_from",
+  "therapy_start_to",
+  "therapy_end_from",
+  "therapy_end_to",
+  "dur_min",
+  "dur_max",
+  "dur_cod",
+];
+const REACTION_TERM_FIELDS = ["reaction_pt"];
+const CASE_FILTER_FIELDS = [
+  "quarter",
+  "report_type",
+  "initial_or_followup",
+  "event_dt_from",
+  "event_dt_to",
+  "fda_dt_from",
+  "fda_dt_to",
+  "mfr_dt_from",
+  "mfr_dt_to",
+  "sex_std",
+  "age_min",
+  "age_max",
+  "age_unit",
+  "age_group",
+  "weight_min",
+  "weight_max",
+  "reporter_country",
+  "case_outcome",
+  "reporter_type",
+];
+
+const DRUG_TERM_CONFIG = {
   drug_name: { label: "Drug name", placeholder: "aspirin" },
   prod_ai: { label: "Active ingredient", placeholder: "ibuprofen" },
-  reaction_pt: { label: "Reaction", placeholder: "headache" },
   indication_pt: { label: "Indication", placeholder: "pain" },
+  role_cod: { label: "Role code", metadataKey: "role_codes" },
+  route: { label: "Route", metadataKey: "routes" },
+  dose_min: { label: "Dose min", type: "number", step: "0.1" },
+  dose_max: { label: "Dose max", type: "number", step: "0.1" },
+  dose_unit: { label: "Dose unit", metadataKey: "dose_units" },
+  therapy_start_from: { label: "Therapy start from", type: "date" },
+  therapy_start_to: { label: "Therapy start to", type: "date" },
+  therapy_end_from: { label: "Therapy end from", type: "date" },
+  therapy_end_to: { label: "Therapy end to", type: "date" },
+  dur_min: { label: "Duration min", type: "number", step: "1" },
+  dur_max: { label: "Duration max", type: "number", step: "1" },
+  dur_cod: { label: "Duration unit", metadataKey: "dur_codes" },
 };
-const FORM_FIELD_NAMES = Array.from(searchForm.elements)
-  .filter((element) => element.name)
-  .map((element) => element.name);
-
-let latestCasePayload = null;
-let filterMetadata = null;
-let caseSearchState = null;
+const REACTION_TERM_CONFIG = {
+  reaction_pt: { label: "Reaction", placeholder: "headache" },
+};
 
 const SELECT_FIELDS = {
   quarter: "quarters",
   report_type: "report_types",
   initial_or_followup: "initial_or_followup_values",
   sex_std: "sex_values",
+  age_unit: "age_units",
   age_group: "age_groups",
-  role_cod: "role_codes",
-  route: "routes",
   case_outcome: "case_outcomes",
   reporter_type: "reporter_types",
 };
 
-const FILTER_LABELS = {
-  primary_terms: "Primary term",
+const CASE_FILTER_LABELS = {
   quarter: "Quarter",
   report_type: "Report type",
   initial_or_followup: "I/F",
@@ -55,18 +98,23 @@ const FILTER_LABELS = {
   event_dt_to: "Event to",
   fda_dt_from: "FDA from",
   fda_dt_to: "FDA to",
+  mfr_dt_from: "Manufacturer from",
+  mfr_dt_to: "Manufacturer to",
   sex_std: "Sex",
-  age_min: "Age min",
-  age_max: "Age max",
+  age_min: "Age min years",
+  age_max: "Age max years",
+  age_unit: "Original age unit",
   age_group: "Age group",
+  weight_min: "Weight min",
+  weight_max: "Weight max",
   reporter_country: "Country",
-  role_cod: "Role",
-  route: "Route",
   case_outcome: "Case outcome",
   reporter_type: "Reporter",
-  therapy_start_from: "Therapy start",
-  therapy_end_to: "Therapy end",
 };
+
+let latestCasePayload = null;
+let filterMetadata = null;
+let caseSearchState = null;
 
 function setStatus(message, isError = false) {
   statusEl.textContent = message;
@@ -89,194 +137,280 @@ function arrayText(values) {
   return values.join(", ");
 }
 
-function emptyTerm() {
-  return {
-    drug_name: "",
-    prod_ai: "",
-    reaction_pt: "",
-    indication_pt: "",
-  };
+function emptyDrugTerm() {
+  return Object.fromEntries(DRUG_TERM_FIELDS.map((field) => [field, ""]));
 }
 
-function cleanTerm(rawTerm = {}) {
-  const term = {};
-  TERM_FIELDS.forEach((field) => {
-    const value = String(rawTerm[field] ?? "").trim();
+function emptyReactionTerm() {
+  return { reaction_pt: "" };
+}
+
+function cleanByFields(rawValue = {}, fields = []) {
+  const cleaned = {};
+  fields.forEach((field) => {
+    const value = String(rawValue[field] ?? "").trim();
     if (value !== "") {
-      term[field] = value;
+      cleaned[field] = value;
     }
   });
-  return term;
+  return cleaned;
 }
 
-function termHasFilters(term) {
-  return TERM_FIELDS.some((field) => String(term[field] ?? "").trim() !== "");
+function cleanDrugTerm(rawTerm = {}) {
+  return cleanByFields(rawTerm, DRUG_TERM_FIELDS);
 }
 
-function parsePrimaryTermsValue(value) {
-  if (!value) {
-    return [];
+function cleanReactionTerm(rawTerm = {}) {
+  return cleanByFields(rawTerm, REACTION_TERM_FIELDS);
+}
+
+function cleanCaseFilters(rawFilters = {}) {
+  return cleanByFields(rawFilters, CASE_FILTER_FIELDS);
+}
+
+function hasObjectFilters(value = {}) {
+  return Object.values(value).some((item) => item !== "" && item !== null && item !== undefined);
+}
+
+function selectOptions(metadataKey, selectedValue = "", placeholder = "Any") {
+  const values = filterMetadata?.[metadataKey] || [];
+  return [
+    `<option value="">${escapeHtml(placeholder)}</option>`,
+    ...values.map((value) => {
+      const selected = String(value) === String(selectedValue) ? " selected" : "";
+      return `<option value="${escapeHtml(value)}"${selected}>${escapeHtml(value)}</option>`;
+    }),
+  ].join("");
+}
+
+function renderField(field, config, value, dataAttribute) {
+  const attribute = `${dataAttribute}="${escapeHtml(field)}"`;
+  const label = escapeHtml(config.label);
+  const fieldValue = value ?? "";
+
+  if (config.metadataKey) {
+    return `
+      <label>
+        ${label}
+        <select ${attribute}>
+          ${selectOptions(config.metadataKey, fieldValue, `Any ${config.label.toLowerCase()}`)}
+        </select>
+      </label>
+    `;
   }
-  try {
-    const parsed = typeof value === "string" ? JSON.parse(value) : value;
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return parsed.map(cleanTerm).filter(termHasFilters);
-  } catch (error) {
-    return [];
-  }
+
+  const type = config.type || "text";
+  const step = config.step ? ` step="${escapeHtml(config.step)}"` : "";
+  const min = type === "number" ? ' min="0"' : "";
+  const placeholder = config.placeholder ? ` placeholder="${escapeHtml(config.placeholder)}"` : "";
+  return `
+    <label>
+      ${label}
+      <input ${attribute} type="${escapeHtml(type)}" value="${escapeHtml(fieldValue)}"${step}${min}${placeholder}>
+    </label>
+  `;
 }
 
-function termsFromParams(params = {}) {
-  const explicitTerms = parsePrimaryTermsValue(params.primary_terms);
-  if (explicitTerms.length > 0 || params.primary_terms) {
-    return explicitTerms;
-  }
-
-  const legacyTerm = cleanTerm(params);
-  return termHasFilters(legacyTerm) ? [legacyTerm] : [];
-}
-
-function renderPrimaryTerms(terms = [emptyTerm()]) {
-  const rows = terms.length > 0 ? terms : [emptyTerm()];
-  primaryTermsEl.innerHTML = rows.map((term, index) => `
-    <div class="term-row" data-term-index="${index}">
-      ${TERM_FIELDS.map((field) => `
-        <label>
-          ${escapeHtml(TERM_FIELD_CONFIG[field].label)}
-          <input data-term-field="${escapeHtml(field)}" value="${escapeHtml(term[field] || "")}" placeholder="${escapeHtml(TERM_FIELD_CONFIG[field].placeholder)}">
-        </label>
-      `).join("")}
-      <button type="button" class="ghost remove-primary-term" ${rows.length === 1 ? "disabled" : ""}>Remove</button>
-    </div>
-  `).join("");
-
-  primaryTermsEl.querySelectorAll(".remove-primary-term").forEach((button) => {
-    button.addEventListener("click", () => {
-      button.closest(".term-row")?.remove();
-      if (primaryTermsEl.querySelectorAll(".term-row").length === 0) {
-        renderPrimaryTerms([emptyTerm()]);
-      } else {
-        updateRemoveTermButtons();
-      }
-    });
-  });
-}
-
-function updateRemoveTermButtons() {
-  const buttons = primaryTermsEl.querySelectorAll(".remove-primary-term");
+function updateRemoveButtons(container, selector) {
+  const buttons = container.querySelectorAll(selector);
   buttons.forEach((button) => {
     button.disabled = buttons.length === 1;
   });
 }
 
-function addPrimaryTerm(term = emptyTerm()) {
-  const currentTerms = rowsToTerms({ includeEmpty: true });
-  currentTerms.push(term);
-  renderPrimaryTerms(currentTerms);
+function renderDrugTerms(terms = [emptyDrugTerm()]) {
+  const rows = terms.length > 0 ? terms : [emptyDrugTerm()];
+  drugTermsEl.innerHTML = rows.map((term, index) => `
+    <div class="term-row drug-term-row" data-drug-term-index="${index}">
+      ${DRUG_TERM_FIELDS.map((field) =>
+        renderField(field, DRUG_TERM_CONFIG[field], term[field] || "", "data-drug-term-field")
+      ).join("")}
+      <button type="button" class="ghost remove-drug-term" ${rows.length === 1 ? "disabled" : ""}>Remove</button>
+    </div>
+  `).join("");
+
+  drugTermsEl.querySelectorAll(".remove-drug-term").forEach((button) => {
+    button.addEventListener("click", () => {
+      button.closest(".drug-term-row")?.remove();
+      if (drugTermsEl.querySelectorAll(".drug-term-row").length === 0) {
+        renderDrugTerms([emptyDrugTerm()]);
+      } else {
+        updateRemoveButtons(drugTermsEl, ".remove-drug-term");
+      }
+    });
+  });
 }
 
-function rowsToTerms({ includeEmpty = false } = {}) {
-  return Array.from(primaryTermsEl.querySelectorAll(".term-row"))
+function renderReactionTerms(terms = [emptyReactionTerm()]) {
+  const rows = terms.length > 0 ? terms : [emptyReactionTerm()];
+  reactionTermsEl.innerHTML = rows.map((term, index) => `
+    <div class="term-row reaction-term-row" data-reaction-term-index="${index}">
+      ${REACTION_TERM_FIELDS.map((field) =>
+        renderField(field, REACTION_TERM_CONFIG[field], term[field] || "", "data-reaction-term-field")
+      ).join("")}
+      <button type="button" class="ghost remove-reaction-term" ${rows.length === 1 ? "disabled" : ""}>Remove</button>
+    </div>
+  `).join("");
+
+  reactionTermsEl.querySelectorAll(".remove-reaction-term").forEach((button) => {
+    button.addEventListener("click", () => {
+      button.closest(".reaction-term-row")?.remove();
+      if (reactionTermsEl.querySelectorAll(".reaction-term-row").length === 0) {
+        renderReactionTerms([emptyReactionTerm()]);
+      } else {
+        updateRemoveButtons(reactionTermsEl, ".remove-reaction-term");
+      }
+    });
+  });
+}
+
+function addDrugTerm(term = emptyDrugTerm()) {
+  const currentTerms = rowsToDrugTerms({ includeEmpty: true });
+  currentTerms.push(term);
+  renderDrugTerms(currentTerms);
+}
+
+function addReactionTerm(term = emptyReactionTerm()) {
+  const currentTerms = rowsToReactionTerms({ includeEmpty: true });
+  currentTerms.push(term);
+  renderReactionTerms(currentTerms);
+}
+
+function rowsToDrugTerms({ includeEmpty = false } = {}) {
+  return Array.from(drugTermsEl.querySelectorAll(".drug-term-row"))
     .map((row) => {
       const term = {};
-      row.querySelectorAll("[data-term-field]").forEach((input) => {
-        term[input.dataset.termField] = input.value;
+      row.querySelectorAll("[data-drug-term-field]").forEach((input) => {
+        term[input.dataset.drugTermField] = input.value;
       });
-      return includeEmpty ? { ...emptyTerm(), ...term } : cleanTerm(term);
+      return includeEmpty ? { ...emptyDrugTerm(), ...term } : cleanDrugTerm(term);
     })
-    .filter((term) => includeEmpty || termHasFilters(term));
+    .filter((term) => includeEmpty || hasObjectFilters(term));
 }
 
-function currentParams() {
-  const formData = new FormData(searchForm);
-  const params = {};
-
-  for (const [key, value] of formData.entries()) {
-    const cleaned = value.toString().trim();
-    params[key] = cleaned;
-  }
-
-  const terms = rowsToTerms();
-  if (terms.length > 0) {
-    params.primary_terms = JSON.stringify(terms);
-    params.primary_term_mode = primaryTermModeEl.value || "any";
-  }
-
-  return params;
+function rowsToReactionTerms({ includeEmpty = false } = {}) {
+  return Array.from(reactionTermsEl.querySelectorAll(".reaction-term-row"))
+    .map((row) => {
+      const term = {};
+      row.querySelectorAll("[data-reaction-term-field]").forEach((input) => {
+        term[input.dataset.reactionTermField] = input.value;
+      });
+      return includeEmpty ? { ...emptyReactionTerm(), ...term } : cleanReactionTerm(term);
+    })
+    .filter((term) => includeEmpty || hasObjectFilters(term));
 }
 
-function normalizeParams(rawParams = currentParams()) {
-  const params = {};
-  const terms = termsFromParams(rawParams);
-
-  if (terms.length > 0) {
-    params.primary_terms = JSON.stringify(terms);
-    params.primary_term_mode = rawParams.primary_term_mode === "all" ? "all" : "any";
-  }
-
-  Object.entries(rawParams).forEach(([key, value]) => {
-    if (TERM_FIELDS.includes(key) || key === "primary_terms" || key === "primary_term_mode" || key === "limit") {
-      return;
-    }
-    if (key === "offset") {
-      const parsed = Number(value);
-      if (Number.isFinite(parsed) && parsed > 0) {
-        params.offset = parsed;
+function currentCaseFilters() {
+  const filters = {};
+  CASE_FILTER_FIELDS.forEach((field) => {
+    const input = searchForm.elements.namedItem(field);
+    if (input) {
+      const cleaned = String(input.value ?? "").trim();
+      if (cleaned !== "") {
+        filters[field] = cleaned;
       }
-      return;
-    }
-
-    const cleaned = String(value ?? "").trim();
-    if (cleaned !== "") {
-      params[key] = cleaned;
     }
   });
-
-  params.limit = DEFAULT_LIMIT;
-
-  return params;
+  return filters;
 }
 
-function activeFilterEntries(params) {
-  return Object.entries(params).filter(([key, value]) => {
-    if (key === "limit" || key === "offset" || key === "primary_term_mode") {
-      return false;
-    }
-    if (key === "primary_terms") {
-      return parsePrimaryTermsValue(value).length > 0;
-    }
-    return value !== "" && value !== null && value !== undefined;
+function normalizeRequest(rawRequest = {}) {
+  const drugTerms = Array.isArray(rawRequest.drug_terms)
+    ? rawRequest.drug_terms.map(cleanDrugTerm).filter(hasObjectFilters)
+    : [];
+  const reactionTerms = Array.isArray(rawRequest.reaction_terms)
+    ? rawRequest.reaction_terms.map(cleanReactionTerm).filter(hasObjectFilters)
+    : [];
+  const caseFilters = cleanCaseFilters(rawRequest.case_filters || {});
+  const request = {
+    drug_terms: drugTerms,
+    reaction_terms: reactionTerms,
+    concept_mode: rawRequest.concept_mode === "all" ? "all" : "any",
+    case_filters: caseFilters,
+    limit: DEFAULT_LIMIT,
+  };
+
+  const offset = Number(rawRequest.offset || 0);
+  if (Number.isFinite(offset) && offset > 0) {
+    request.offset = offset;
+  }
+
+  return request;
+}
+
+function currentRequest() {
+  return normalizeRequest({
+    drug_terms: rowsToDrugTerms(),
+    reaction_terms: rowsToReactionTerms(),
+    concept_mode: conceptModeEl.value || "any",
+    case_filters: currentCaseFilters(),
   });
 }
 
-function hasActiveFilters(params) {
-  return activeFilterEntries(params).length > 0;
+function compactRequestForUrl(request, offset = 0) {
+  const normalized = normalizeRequest({ ...request, offset });
+  const compact = {};
+  if (normalized.drug_terms.length > 0) {
+    compact.drug_terms = normalized.drug_terms;
+  }
+  if (normalized.reaction_terms.length > 0) {
+    compact.reaction_terms = normalized.reaction_terms;
+  }
+  if (normalized.drug_terms.length + normalized.reaction_terms.length > 1 || normalized.concept_mode === "all") {
+    compact.concept_mode = normalized.concept_mode;
+  }
+  if (hasObjectFilters(normalized.case_filters)) {
+    compact.case_filters = normalized.case_filters;
+  }
+  if (normalized.offset && normalized.offset > 0) {
+    compact.offset = normalized.offset;
+  }
+  return compact;
 }
 
-function termSummary(term) {
-  return TERM_FIELDS
+function activeFilterCount(request) {
+  const normalized = normalizeRequest(request);
+  return (
+    normalized.drug_terms.length
+    + normalized.reaction_terms.length
+    + Object.keys(normalized.case_filters).length
+  );
+}
+
+function hasActiveFilters(request) {
+  return activeFilterCount(request) > 0;
+}
+
+function drugTermSummary(term) {
+  return DRUG_TERM_FIELDS
     .filter((field) => term[field])
-    .map((field) => `${TERM_FIELD_CONFIG[field].label}: ${term[field]}`)
+    .map((field) => `${DRUG_TERM_CONFIG[field].label}: ${term[field]}`)
     .join(" | ");
 }
 
-function filterChips(params) {
+function reactionTermSummary(term) {
+  return REACTION_TERM_FIELDS
+    .filter((field) => term[field])
+    .map((field) => `${REACTION_TERM_CONFIG[field].label}: ${term[field]}`)
+    .join(" | ");
+}
+
+function filterChips(request) {
+  const normalized = normalizeRequest(request);
   const chips = [];
-  const terms = parsePrimaryTermsValue(params.primary_terms);
-  const termMode = params.primary_term_mode === "all" ? "All terms" : "Any term";
-
-  terms.forEach((term, index) => {
-    chips.push([
-      terms.length > 1 ? `${termMode} ${index + 1}` : "Primary term",
-      termSummary(term),
-    ]);
+  const conceptTotal = normalized.drug_terms.length + normalized.reaction_terms.length;
+  if (conceptTotal > 1 || normalized.concept_mode === "all") {
+    chips.push(["Concept mode", normalized.concept_mode === "all" ? "All concepts" : "Any concept"]);
+  }
+  normalized.drug_terms.forEach((term, index) => {
+    chips.push([`Drug concept ${index + 1}`, drugTermSummary(term)]);
   });
-
-  activeFilterEntries(params)
-    .filter(([key]) => key !== "primary_terms" && FILTER_LABELS[key])
-    .forEach(([key, value]) => chips.push([FILTER_LABELS[key], value]));
+  normalized.reaction_terms.forEach((term, index) => {
+    chips.push([`Reaction concept ${index + 1}`, reactionTermSummary(term)]);
+  });
+  Object.entries(normalized.case_filters)
+    .filter(([key]) => CASE_FILTER_LABELS[key])
+    .forEach(([key, value]) => chips.push([CASE_FILTER_LABELS[key], value]));
 
   if (chips.length === 0) {
     return "";
@@ -287,35 +421,21 @@ function filterChips(params) {
     .join("");
 }
 
-function buildQuery(params) {
-  const query = new URLSearchParams();
-  Object.entries(normalizeParams(params)).forEach(([key, value]) => {
-    if (key !== "offset" && value !== null && value !== undefined && value !== "") {
-      query.set(key, String(value));
-    }
-  });
-  if (params.offset && Number(params.offset) > 0) {
-    query.set("offset", String(params.offset));
-  }
-  return query.toString();
-}
-
 function resetFormToDefaults() {
   searchForm.reset();
-  primaryTermModeEl.value = "any";
-  renderPrimaryTerms([emptyTerm()]);
+  conceptModeEl.value = "any";
+  renderDrugTerms([emptyDrugTerm()]);
+  renderReactionTerms([emptyReactionTerm()]);
 }
 
-function applyParamsToForm(params) {
+function applyRequestToForm(request) {
+  const normalized = normalizeRequest(request);
   resetFormToDefaults();
-  const terms = termsFromParams(params);
-  renderPrimaryTerms(terms.length > 0 ? terms : [emptyTerm()]);
-  primaryTermModeEl.value = params.primary_term_mode === "all" ? "all" : "any";
+  conceptModeEl.value = normalized.concept_mode;
+  renderDrugTerms(normalized.drug_terms.length > 0 ? normalized.drug_terms : [emptyDrugTerm()]);
+  renderReactionTerms(normalized.reaction_terms.length > 0 ? normalized.reaction_terms : [emptyReactionTerm()]);
 
-  Object.entries(params).forEach(([key, value]) => {
-    if (TERM_FIELDS.includes(key) || key === "primary_terms" || key === "primary_term_mode") {
-      return;
-    }
+  Object.entries(normalized.case_filters).forEach(([key, value]) => {
     const field = searchForm.elements.namedItem(key);
     if (field) {
       field.value = String(value);
@@ -325,39 +445,34 @@ function applyParamsToForm(params) {
 
 function readUrlState() {
   const query = new URLSearchParams(window.location.search);
-  const params = {};
-
-  query.forEach((value, key) => {
-    if (key !== "mode") {
-      params[key] = value || "";
-    }
-  });
-
-  return {
-    params: normalizeParams(params),
-    offset: Number(query.get("offset") || 0),
-  };
-}
-
-function writeUrlState(params, offset = 0) {
-  const query = new URLSearchParams();
-  const normalized = normalizeParams(params);
-  const active = hasActiveFilters(normalized);
-
-  if (active) {
-    Object.entries(normalized).forEach(([key, value]) => {
-      if (key === "limit" || key === "offset") {
-        return;
-      }
-      query.set(key, String(value));
-    });
-    if (offset > 0) {
-      query.set("offset", String(offset));
-    }
+  const encoded = query.get("q");
+  if (!encoded) {
+    return { request: normalizeRequest({}), offset: 0 };
   }
 
+  try {
+    const parsed = JSON.parse(encoded);
+    const request = normalizeRequest(parsed);
+    return { request, offset: Number(request.offset || 0) };
+  } catch (error) {
+    return { request: normalizeRequest({}), offset: 0 };
+  }
+}
+
+function writeUrlState(request, offset = 0) {
+  const query = new URLSearchParams();
+  const normalized = normalizeRequest(request);
+  if (hasActiveFilters(normalized)) {
+    query.set("q", JSON.stringify(compactRequestForUrl(normalized, offset)));
+  }
   const nextUrl = query.toString() ? `${window.location.pathname}?${query.toString()}` : window.location.pathname;
   history.replaceState({}, "", nextUrl);
+}
+
+function buildSearchUrl(request, offset = 0) {
+  const query = new URLSearchParams();
+  query.set("q", JSON.stringify(compactRequestForUrl(request, offset)));
+  return `${window.location.origin}${window.location.pathname}?${query.toString()}`;
 }
 
 function formatTimestamp(value) {
@@ -378,8 +493,7 @@ function renderCohortSummary() {
   }
 
   const payload = latestCasePayload;
-  const params = caseSearchState.params;
-  const filterCount = activeFilterEntries(params).length;
+  const request = caseSearchState.request;
   const total = payload?.total ?? 0;
   const shown = payload?.items?.length ?? 0;
 
@@ -391,12 +505,29 @@ function renderCohortSummary() {
     <div class="meta">
       <div><strong>Matching cases</strong>${escapeHtml(total)}</div>
       <div><strong>Rows in current view</strong>${escapeHtml(shown)}</div>
-      <div><strong>Active filters</strong>${escapeHtml(filterCount)}</div>
+      <div><strong>Active filters</strong>${escapeHtml(activeFilterCount(request))}</div>
       <div><strong>Last run</strong>${escapeHtml(formatTimestamp(caseSearchState.executedAt))}</div>
     </div>
     <p class="hint">The browser URL now reflects this cohort, so the current search can be bookmarked or shared locally.</p>
-    <div class="chips">${filterChips(params) || '<span class="chip">No active filters</span>'}</div>
+    <div class="chips">${filterChips(request) || '<span class="chip">No active filters</span>'}</div>
   `;
+}
+
+function errorDetailFromPayload(payload, fallback) {
+  if (!payload || !payload.detail) {
+    return fallback;
+  }
+  if (Array.isArray(payload.detail)) {
+    return payload.detail
+      .map((item) => {
+        if (typeof item === "string") {
+          return item;
+        }
+        return item.msg || item.detail || JSON.stringify(item);
+      })
+      .join("; ");
+  }
+  return payload.detail;
 }
 
 async function fetchJson(url) {
@@ -404,14 +535,28 @@ async function fetchJson(url) {
   if (!response.ok) {
     let detail = response.statusText;
     try {
-      const payload = await response.json();
-      if (payload.detail) {
-        if (Array.isArray(payload.detail)) {
-          detail = payload.detail.map((item) => item.msg || item.detail || JSON.stringify(item)).join("; ");
-        } else {
-          detail = payload.detail;
-        }
-      }
+      detail = errorDetailFromPayload(await response.json(), detail);
+    } catch (error) {
+      // ignore JSON parse errors
+    }
+    throw new Error(detail);
+  }
+  return response.json();
+}
+
+async function postJson(url, payload) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      detail = errorDetailFromPayload(await response.json(), detail);
     } catch (error) {
       // ignore JSON parse errors
     }
@@ -448,21 +593,6 @@ function timestampSlug() {
   return new Date().toISOString().replaceAll(":", "-");
 }
 
-function buildSearchUrl(params, offset = 0) {
-  const query = new URLSearchParams();
-  const normalized = normalizeParams(params);
-  Object.entries(normalized).forEach(([key, value]) => {
-    if (key === "limit" || key === "offset") {
-      return;
-    }
-    query.set(key, String(value));
-  });
-  if (offset > 0) {
-    query.set("offset", String(offset));
-  }
-  return `${window.location.origin}${window.location.pathname}?${query.toString()}`;
-}
-
 function populateSelect(id, values, placeholder) {
   const select = document.getElementById(id);
   if (!select) {
@@ -492,134 +622,14 @@ async function loadFilterMetadata() {
       const placeholder = `Any ${field.replaceAll("_", " ")}`;
       populateSelect(selectId, filterMetadata[metadataKey] || [], placeholder);
     });
+    renderDrugTerms(rowsToDrugTerms({ includeEmpty: true }));
     setStatus("Filter metadata loaded.");
   } catch (error) {
     setStatus(`Metadata load failed: ${error.message}`, true);
   }
 }
 
-function readSavedSearches() {
-  try {
-    const raw = localStorage.getItem(SAVED_SEARCH_STORAGE_KEY);
-    if (!raw) {
-      return [];
-    }
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (error) {
-    return [];
-  }
-}
-
-function writeSavedSearches(savedSearches) {
-  localStorage.setItem(SAVED_SEARCH_STORAGE_KEY, JSON.stringify(savedSearches));
-}
-
-function renderSavedSearches() {
-  const savedSearches = readSavedSearches()
-    .sort((left, right) => String(right.saved_at || "").localeCompare(String(left.saved_at || "")));
-
-  if (savedSearches.length === 0) {
-    savedSearchListEl.innerHTML = '<p class="saved-search-empty">No saved searches yet.</p>';
-    return;
-  }
-
-  savedSearchListEl.innerHTML = savedSearches.map((savedSearch) => {
-    const params = normalizeParams(savedSearch.params || {});
-    return `
-      <div class="saved-search-item">
-        <div>
-          <strong>${escapeHtml(savedSearch.name)}</strong>
-          <p class="hint">Case cohort | ${escapeHtml(activeFilterEntries(params).length)} filters | saved ${escapeHtml(formatTimestamp(savedSearch.saved_at))}</p>
-        </div>
-        <div class="chips">${filterChips(params) || '<span class="chip">No active filters</span>'}</div>
-        <div class="actions">
-          <button type="button" class="ghost load-saved-search" data-saved-search-id="${escapeHtml(savedSearch.id)}">Load</button>
-          <button type="button" class="ghost delete-saved-search" data-saved-search-id="${escapeHtml(savedSearch.id)}">Delete</button>
-        </div>
-      </div>
-    `;
-  }).join("");
-
-  savedSearchListEl.querySelectorAll(".load-saved-search").forEach((button) => {
-    button.addEventListener("click", async () => {
-      await loadSavedSearch(button.dataset.savedSearchId || "");
-    });
-  });
-
-  savedSearchListEl.querySelectorAll(".delete-saved-search").forEach((button) => {
-    button.addEventListener("click", () => {
-      deleteSavedSearch(button.dataset.savedSearchId || "");
-    });
-  });
-}
-
-function buildSavedSearchId() {
-  if (window.crypto && typeof window.crypto.randomUUID === "function") {
-    return window.crypto.randomUUID();
-  }
-  return `saved-${Date.now()}`;
-}
-
-function saveCurrentSearch() {
-  const name = savedSearchNameEl.value.trim();
-  const params = normalizeParams(currentParams());
-
-  if (!name) {
-    setStatus("Choose a saved-search name before saving.", true);
-    return;
-  }
-  if (!hasActiveFilters(params)) {
-    setStatus("Apply at least one filter before saving a search.", true);
-    return;
-  }
-
-  const savedSearches = readSavedSearches();
-  const existing = savedSearches.find((savedSearch) => savedSearch.name.toLowerCase() === name.toLowerCase());
-  const savedAt = new Date().toISOString();
-  const entry = {
-    id: existing?.id || buildSavedSearchId(),
-    name,
-    mode: SEARCH_MODE,
-    saved_at: savedAt,
-    params,
-  };
-
-  const nextSavedSearches = existing
-    ? savedSearches.map((savedSearch) => (savedSearch.id === existing.id ? entry : savedSearch))
-    : [entry, ...savedSearches];
-
-  writeSavedSearches(nextSavedSearches);
-  renderSavedSearches();
-  setStatus(existing ? `Overwrote saved search "${name}".` : `Saved search "${name}".`);
-}
-
-async function loadSavedSearch(savedSearchId) {
-  const savedSearch = readSavedSearches().find((entry) => entry.id === savedSearchId);
-  if (!savedSearch) {
-    setStatus("Saved search could not be found.", true);
-    return;
-  }
-
-  savedSearchNameEl.value = savedSearch.name;
-  const params = normalizeParams(savedSearch.params || {});
-  applyParamsToForm(params);
-  await runCaseSearchWithOffset(0, params);
-}
-
-function deleteSavedSearch(savedSearchId) {
-  const savedSearches = readSavedSearches();
-  const savedSearch = savedSearches.find((entry) => entry.id === savedSearchId);
-  if (!savedSearch) {
-    return;
-  }
-
-  writeSavedSearches(savedSearches.filter((entry) => entry.id !== savedSearchId));
-  renderSavedSearches();
-  setStatus(`Deleted saved search "${savedSearch.name}".`);
-}
-
-function renderPager(payload, params) {
+function renderPager(payload, request) {
   if (!payload || payload.total === 0) {
     casePagerEl.innerHTML = "";
     return;
@@ -640,21 +650,21 @@ function renderPager(payload, params) {
   const next = document.getElementById("case-next");
 
   if (prev) {
-    prev.addEventListener("click", () => runCaseSearchWithOffset(Math.max(0, payload.offset - payload.limit), params));
+    prev.addEventListener("click", () => runCaseSearchWithOffset(Math.max(0, payload.offset - payload.limit), request));
   }
   if (next) {
-    next.addEventListener("click", () => runCaseSearchWithOffset(payload.offset + payload.limit, params));
+    next.addEventListener("click", () => runCaseSearchWithOffset(payload.offset + payload.limit, request));
   }
 }
 
-function renderCaseResults(payload, params) {
+function renderCaseResults(payload, request) {
   latestCasePayload = payload;
   caseSummaryEl.textContent = `Showing ${payload.items.length} of ${payload.total} matching cases.`;
-  caseFilterSummaryEl.innerHTML = filterChips({ ...params, limit: payload.limit });
+  caseFilterSummaryEl.innerHTML = filterChips(request);
 
   if (payload.items.length === 0) {
     caseResultsEl.innerHTML = '<p class="empty-state">No matching latest cases found.</p>';
-    renderPager(payload, params);
+    renderPager(payload, request);
     return;
   }
 
@@ -699,7 +709,7 @@ function renderCaseResults(payload, params) {
     });
   });
 
-  renderPager(payload, params);
+  renderPager(payload, request);
 }
 
 function renderCaseDetail(payload) {
@@ -761,27 +771,26 @@ async function loadCaseDetail(caseVersionPk) {
   }
 }
 
-async function runCaseSearchWithOffset(offset, params) {
-  const baseParams = normalizeParams(params);
-  if (!hasActiveFilters(baseParams)) {
+async function runCaseSearchWithOffset(offset, request) {
+  const baseRequest = normalizeRequest(request);
+  if (!hasActiveFilters(baseRequest)) {
     setStatus("Choose at least one filter before searching.", true);
     return;
   }
 
-  const effectiveParams = { ...baseParams, offset };
+  const effectiveRequest = normalizeRequest({ ...baseRequest, offset });
   setStatus("Searching cases...");
   try {
-    const payload = await fetchJson(`/cases/search?${buildQuery(effectiveParams)}`);
+    const payload = await postJson("/cases/search", effectiveRequest);
     caseSearchState = {
       mode: SEARCH_MODE,
-      params: baseParams,
+      request: baseRequest,
       offset: payload.offset,
       executedAt: new Date().toISOString(),
     };
-    renderCaseResults(payload, baseParams);
+    renderCaseResults(payload, baseRequest);
     renderCohortSummary();
-    writeUrlState(baseParams, payload.offset);
-    savedSearchNameEl.value = savedSearchNameEl.value.trim();
+    writeUrlState(baseRequest, payload.offset);
 
     if (payload.items.length > 0) {
       caseDetailEl.innerHTML = '<p class="empty-state">Select a case from the table to inspect its linked drugs, reactions, outcomes, and metadata.</p>';
@@ -798,17 +807,17 @@ async function runCaseSearchWithOffset(offset, params) {
 
 async function runCaseSearch(event) {
   event.preventDefault();
-  await runCaseSearchWithOffset(0, currentParams());
+  await runCaseSearchWithOffset(0, currentRequest());
 }
 
 function buildReportPayload(payload, searchState) {
-  const params = searchState?.params || {};
+  const request = searchState?.request || normalizeRequest({});
   return {
     search_type: SEARCH_MODE,
     exported_at: new Date().toISOString(),
-    shareable_url: buildSearchUrl(params, searchState?.offset || 0),
-    active_filter_count: activeFilterEntries(params).length,
-    filters: Object.fromEntries(activeFilterEntries(params)),
+    shareable_url: buildSearchUrl(request, searchState?.offset || 0),
+    active_filter_count: activeFilterCount(request),
+    filters: compactRequestForUrl(request, searchState?.offset || 0),
     pagination: {
       limit: payload.limit,
       offset: payload.offset || 0,
@@ -821,15 +830,34 @@ function buildReportPayload(payload, searchState) {
   };
 }
 
-function exportCasesCsv() {
-  if (!latestCasePayload || latestCasePayload.items.length === 0) {
+async function fetchAllCaseResultsForExport() {
+  if (!latestCasePayload || !caseSearchState) {
     setStatus("Run a case search before exporting.", true);
+    return null;
+  }
+
+  const request = normalizeRequest(caseSearchState.request);
+  setStatus(`Exporting all ${latestCasePayload.total} matching cases...`);
+  try {
+    return await postJson("/cases/export", request);
+  } catch (error) {
+    setStatus(`Export failed: ${error.message}`, true);
+    return null;
+  }
+}
+
+async function exportCasesCsv() {
+  const exportPayload = await fetchAllCaseResultsForExport();
+  if (!exportPayload || exportPayload.items.length === 0) {
+    if (exportPayload) {
+      setStatus("No matching cases to export.", true);
+    }
     return;
   }
 
   downloadCsv("faers-case-results.csv", [
     ["source_report_id", "source_quarter", "report_type", "reporter_country", "sex_std", "age_value", "age_unit", "drugs", "active_ingredients", "reactions", "outcomes"],
-    ...latestCasePayload.items.map((item) => [
+    ...exportPayload.items.map((item) => [
       item.source_report_id,
       item.source_quarter,
       item.report_type,
@@ -843,22 +871,26 @@ function exportCasesCsv() {
       arrayText(item.outcomes),
     ]),
   ]);
-  setStatus("Exported current case results to CSV.");
+  setStatus(`Exported ${exportPayload.items.length} matching cases to CSV.`);
 }
 
-function exportCaseReport() {
+async function exportCaseReport() {
   if (!latestCasePayload || !caseSearchState) {
     setStatus("Run a case search before exporting a report.", true);
     return;
   }
 
-  downloadJson(`faers-case-report-${timestampSlug()}.json`, buildReportPayload(latestCasePayload, caseSearchState));
-  setStatus("Exported case report JSON with filters and totals.");
+  const exportPayload = await fetchAllCaseResultsForExport();
+  if (!exportPayload) {
+    return;
+  }
+
+  downloadJson(`faers-case-report-${timestampSlug()}.json`, buildReportPayload(exportPayload, caseSearchState));
+  setStatus(`Exported case report JSON with ${exportPayload.items.length} matching cases.`);
 }
 
 function clearFilters() {
   resetFormToDefaults();
-  savedSearchNameEl.value = "";
   caseSummaryEl.textContent = "No case search has been run yet.";
   caseFilterSummaryEl.innerHTML = "";
   caseResultsEl.innerHTML = "";
@@ -873,25 +905,24 @@ function clearFilters() {
 
 async function hydrateFromUrl() {
   const urlState = readUrlState();
-  applyParamsToForm(urlState.params);
+  applyRequestToForm(urlState.request);
 
-  if (!hasActiveFilters(urlState.params)) {
+  if (!hasActiveFilters(urlState.request)) {
     renderCohortSummary();
     return;
   }
 
-  savedSearchNameEl.value = "";
-  await runCaseSearchWithOffset(urlState.offset, urlState.params);
+  await runCaseSearchWithOffset(urlState.offset, urlState.request);
 }
 
-renderPrimaryTerms([emptyTerm()]);
+renderDrugTerms([emptyDrugTerm()]);
+renderReactionTerms([emptyReactionTerm()]);
 
 searchForm.addEventListener("submit", runCaseSearch);
-addPrimaryTermButton.addEventListener("click", () => addPrimaryTerm());
+addDrugTermButton.addEventListener("click", () => addDrugTerm());
+addReactionTermButton.addEventListener("click", () => addReactionTerm());
 clearFiltersButton.addEventListener("click", clearFilters);
-saveSearchButton.addEventListener("click", saveCurrentSearch);
 exportCasesButton.addEventListener("click", exportCasesCsv);
 exportCaseReportButton.addEventListener("click", exportCaseReport);
 
-renderSavedSearches();
 loadFilterMetadata().then(() => hydrateFromUrl());

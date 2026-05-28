@@ -118,24 +118,27 @@ uv run pytest
 The local UI (`http://127.0.0.1:8000/app`) provides a faceted search interface over the FAERS data.
 
 ### Features
-- **Faceted Search**: Filter by demographics, drug name, reaction, indication, case outcomes, event dates, and more.
+- **Concept Search**: Filter by drug-row concepts, case-level reactions, demographics, outcomes, event dates, and more.
 - **Case Details**: Open specific cases to see all linked drugs, outcomes, and reactions.
 - **Sharable Links**: Active search parameters are synced to the URL.
-- **Saved Searches**: Save your frequent queries locally in your browser.
-- **Export Data**: Export result tables to CSV, or export JSON reports for your methods writeups.
+- **Export Data**: Export all matching case results to CSV, or export JSON reports for your methods writeups.
 
 ### Example API Usage
 ```bash
-# Find latest cases for a drug
-curl "http://127.0.0.1:8000/cases/search?drug_name=aspirin"
+# Find latest cases for a drug concept
+curl -X POST "http://127.0.0.1:8000/cases/search" \
+  -H "Content-Type: application/json" \
+  -d '{"drug_terms":[{"drug_name":"aspirin"}]}'
 
-# Filter by drug, route, and case outcome
-curl "http://127.0.0.1:8000/cases/search?drug_name=aspirin&route=ORAL&case_outcome=HO"
+# Filter by a drug-row concept and case outcome
+curl -X POST "http://127.0.0.1:8000/cases/search" \
+  -H "Content-Type: application/json" \
+  -d '{"drug_terms":[{"drug_name":"aspirin","route":"ORAL"}],"case_filters":{"case_outcome":"HO"}}'
 
-# Search with multiple primary terms
-curl --get "http://127.0.0.1:8000/cases/search" \
-  --data-urlencode 'primary_terms=[{"prod_ai":"ibuprofen"},{"drug_name":"aspirin","indication_pt":"pain"}]' \
-  --data-urlencode "primary_term_mode=any"
+# Search with multiple concepts
+curl -X POST "http://127.0.0.1:8000/cases/search" \
+  -H "Content-Type: application/json" \
+  -d '{"concept_mode":"any","drug_terms":[{"prod_ai":"ibuprofen"},{"drug_name":"aspirin","indication_pt":"pain"}],"reaction_terms":[{"reaction_pt":"headache"}]}'
 ```
 
 ---
@@ -213,6 +216,5 @@ curl --get "http://127.0.0.1:8000/cases/search" \
 ---
 
 ## ⚠️ Limitations
-- **Local-Only State**: Saved searches are stored in the browser's `localStorage` and are not synced.
 - **No Authentication**: Designed for local, single-tenant use.
 - **Full Rebuild**: Adding a new quarter currently requires rebuilding the entire warehouse (~5-10 min).

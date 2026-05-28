@@ -1,25 +1,30 @@
 from pathlib import Path
-from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from faersdb.api_models import (
     CaseDetailResponse,
-    CaseSearchParams,
+    CaseSearchRequest,
     CaseSearchResponse,
     FilterMetadataResponse,
     HealthResponse,
 )
 from faersdb.queries import (
     QueryWarehouseError,
+    export_cases,
     get_case_detail,
     get_filter_metadata,
     search_cases,
 )
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+NO_CACHE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
 
 app = FastAPI(
     title="FAERS DB API",
@@ -27,6 +32,14 @@ app = FastAPI(
     description="Read-only API for querying a local FAERS DuckDB+Parquet warehouse.",
 )
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.middleware("http")
+async def disable_local_ui_cache(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path == "/app" or request.url.path.startswith("/static/"):
+        response.headers.update(NO_CACHE_HEADERS)
+    return response
 
 
 @app.get("/", response_model=dict[str, str])
@@ -58,13 +71,24 @@ def filter_metadata_endpoint():
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-@app.get("/cases/search", response_model=CaseSearchResponse)
-def search_cases_endpoint(params: Annotated[CaseSearchParams, Depends()]):
-    errors = params.validation_errors()
+@app.post("/cases/search", response_model=CaseSearchResponse)
+def search_cases_endpoint(request: CaseSearchRequest):
+    errors = request.validation_errors()
     if errors:
         raise HTTPException(status_code=422, detail=errors)
     try:
-        return CaseSearchResponse.model_validate(search_cases(params))
+        return CaseSearchResponse.model_validate(search_cases(request))
+    except QueryWarehouseError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/cases/export", response_model=CaseSearchResponse)
+def export_cases_endpoint(request: CaseSearchRequest):
+    errors = request.validation_errors()
+    if errors:
+        raise HTTPException(status_code=422, detail=errors)
+    try:
+        return CaseSearchResponse.model_validate(export_cases(request))
     except QueryWarehouseError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
