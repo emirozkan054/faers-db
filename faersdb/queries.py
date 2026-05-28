@@ -21,12 +21,25 @@ class QueryWarehouseError(RuntimeError):
     """Raised when the query-optimized warehouse has not been built."""
 
 
+_warehouse_verified = False
+
+
 def _ensure_query_warehouse() -> None:
+    global _warehouse_verified
+    if _warehouse_verified:
+        return
     missing = missing_query_tables()
     if missing:
         raise QueryWarehouseError(
             f"{REBUILD_REQUIRED_MESSAGE} Missing: {', '.join(missing)}."
         )
+    _warehouse_verified = True
+
+
+def reset_warehouse_check() -> None:
+    """Reset the cached warehouse readiness check (for testing)."""
+    global _warehouse_verified
+    _warehouse_verified = False
 
 
 def _add_clause(
@@ -498,22 +511,19 @@ def _case_summary_result(params: CaseSearchRequest, *, paginate: bool) -> dict:
     """
 
     conn = get_conn()
-    try:
-        rows = conn.execute(data_sql, page_params).fetchall()
-        columns = [desc[0] for desc in conn.description][1:]
-        if rows:
-            total = rows[0][0]
-            items = [_row_to_dict(columns, row[1:]) for row in rows]
-        else:
-            count_sql = f"""
-                {_with_clause(match_parts)}
-                SELECT count(*)::int AS total
-                FROM matched
-            """
-            total = conn.execute(count_sql, query_params).fetchone()[0]
-            items = []
-    finally:
-        conn.close()
+    rows = conn.execute(data_sql, page_params).fetchall()
+    columns = [desc[0] for desc in conn.description][1:]
+    if rows:
+        total = rows[0][0]
+        items = [_row_to_dict(columns, row[1:]) for row in rows]
+    else:
+        count_sql = f"""
+            {_with_clause(match_parts)}
+            SELECT count(*)::int AS total
+            FROM matched
+        """
+        total = conn.execute(count_sql, query_params).fetchone()[0]
+        items = []
 
     return {
         "total": total,
@@ -537,28 +547,25 @@ def get_filter_metadata() -> dict:
     """Return precomputed distinct values for each filter dropdown."""
     _ensure_query_warehouse()
     conn = get_conn()
-    try:
-        row = conn.execute("SELECT * FROM filter_metadata LIMIT 1").fetchone()
-        if row is None:
-            return FilterMetadataResponse(
-                quarters=[],
-                report_types=[],
-                initial_or_followup_values=[],
-                sex_values=[],
-                age_units=[],
-                age_groups=[],
-                reporter_countries=[],
-                role_codes=[],
-                routes=[],
-                dose_units=[],
-                case_outcomes=[],
-                reporter_types=[],
-                dur_codes=[],
-            ).model_dump()
-        columns = [desc[0] for desc in conn.description]
-        result = _row_to_dict(columns, row)
-    finally:
-        conn.close()
+    row = conn.execute("SELECT * FROM filter_metadata LIMIT 1").fetchone()
+    if row is None:
+        return FilterMetadataResponse(
+            quarters=[],
+            report_types=[],
+            initial_or_followup_values=[],
+            sex_values=[],
+            age_units=[],
+            age_groups=[],
+            reporter_countries=[],
+            role_codes=[],
+            routes=[],
+            dose_units=[],
+            case_outcomes=[],
+            reporter_types=[],
+            dur_codes=[],
+        ).model_dump()
+    columns = [desc[0] for desc in conn.description]
+    result = _row_to_dict(columns, row)
 
     return FilterMetadataResponse.model_validate(result).model_dump()
 
@@ -569,93 +576,89 @@ def get_case_detail(case_version_pk: int | str) -> dict | None:
     pid = str(case_version_pk)
 
     conn = get_conn()
-    try:
-        header_sql = """
-            SELECT
-                case_version_pk,
-                canonical_case_id,
-                source_case_id,
-                source_report_id,
-                source_quarter,
-                source_system,
-                case_version_num,
-                report_type,
-                initial_or_followup,
-                fda_dt,
-                event_dt,
-                mfr_dt,
-                sex_std,
-                age_value,
-                age_unit,
-                age_group,
-                weight_kg,
-                reporter_country,
-                coalesce((
-                    SELECT list(DISTINCT o.outc_cod ORDER BY o.outc_cod)
-                    FROM latest_outc o
-                    WHERE o.primaryid = s.case_version_pk
-                      AND o.outc_cod IS NOT NULL
-                ), CAST([] AS VARCHAR[])) AS outcomes,
-                coalesce((
-                    SELECT list(DISTINCT rp.rpsr_cod ORDER BY rp.rpsr_cod)
-                    FROM latest_rpsr rp
-                    WHERE rp.primaryid = s.case_version_pk
-                      AND rp.rpsr_cod IS NOT NULL
-                ), CAST([] AS VARCHAR[])) AS reporter_types
-            FROM case_summary s
-            WHERE s.case_version_pk = $1
-        """
-        header_row = conn.execute(header_sql, [pid]).fetchone()
-        if not header_row:
-            return None
-        header_cols = [desc[0] for desc in conn.description]
-        header = _row_to_dict(header_cols, header_row)
+    header_sql = """
+        SELECT
+            case_version_pk,
+            canonical_case_id,
+            source_case_id,
+            source_report_id,
+            source_quarter,
+            source_system,
+            case_version_num,
+            report_type,
+            initial_or_followup,
+            fda_dt,
+            event_dt,
+            mfr_dt,
+            sex_std,
+            age_value,
+            age_unit,
+            age_group,
+            weight_kg,
+            reporter_country,
+            coalesce((
+                SELECT list(DISTINCT o.outc_cod ORDER BY o.outc_cod)
+                FROM latest_outc o
+                WHERE o.primaryid = s.case_version_pk
+                  AND o.outc_cod IS NOT NULL
+            ), CAST([] AS VARCHAR[])) AS outcomes,
+            coalesce((
+                SELECT list(DISTINCT rp.rpsr_cod ORDER BY rp.rpsr_cod)
+                FROM latest_rpsr rp
+                WHERE rp.primaryid = s.case_version_pk
+                  AND rp.rpsr_cod IS NOT NULL
+            ), CAST([] AS VARCHAR[])) AS reporter_types
+        FROM case_summary s
+        WHERE s.case_version_pk = $1
+    """
+    header_row = conn.execute(header_sql, [pid]).fetchone()
+    if not header_row:
+        return None
+    header_cols = [desc[0] for desc in conn.description]
+    header = _row_to_dict(header_cols, header_row)
 
-        drugs_sql = """
-            SELECT
-                d.drug_seq,
-                d.role_cod,
-                d.drugname,
-                d.prod_ai,
-                d.route,
-                d.dose_vbm,
-                d.dose_amt,
-                d.dose_unit,
-                d.start_dt,
-                d.end_dt,
-                coalesce(list(DISTINCT i.indi_pt ORDER BY i.indi_pt)
-                    FILTER (WHERE i.indi_pt IS NOT NULL), CAST([] AS VARCHAR[]))
-                    AS indications,
-                min(th.start_dt) AS therapy_start_dt,
-                max(th.end_dt) AS therapy_end_dt
-            FROM latest_drug d
-            LEFT JOIN latest_indi i ON i.primaryid = d.primaryid
-                AND i.drug_seq IS NOT DISTINCT FROM d.drug_seq
-            LEFT JOIN latest_ther th ON th.primaryid = d.primaryid
-                AND th.drug_seq IS NOT DISTINCT FROM d.drug_seq
-            WHERE d.primaryid = $1
-            GROUP BY d.drug_seq, d.role_cod, d.drugname, d.prod_ai,
-                     d.route, d.dose_vbm, d.dose_amt, d.dose_unit,
-                     d.start_dt, d.end_dt
-            ORDER BY d.drug_seq NULLS LAST, d.drugname NULLS LAST
-        """
-        drug_rows = conn.execute(drugs_sql, [pid]).fetchall()
-        drug_cols = [desc[0] for desc in conn.description]
-        drugs = [_row_to_dict(drug_cols, row) for row in drug_rows]
+    drugs_sql = """
+        SELECT
+            d.drug_seq,
+            d.role_cod,
+            d.drugname,
+            d.prod_ai,
+            d.route,
+            d.dose_vbm,
+            d.dose_amt,
+            d.dose_unit,
+            d.start_dt,
+            d.end_dt,
+            coalesce(list(DISTINCT i.indi_pt ORDER BY i.indi_pt)
+                FILTER (WHERE i.indi_pt IS NOT NULL), CAST([] AS VARCHAR[]))
+                AS indications,
+            min(th.start_dt) AS therapy_start_dt,
+            max(th.end_dt) AS therapy_end_dt
+        FROM latest_drug d
+        LEFT JOIN latest_indi i ON i.primaryid = d.primaryid
+            AND i.drug_seq IS NOT DISTINCT FROM d.drug_seq
+        LEFT JOIN latest_ther th ON th.primaryid = d.primaryid
+            AND th.drug_seq IS NOT DISTINCT FROM d.drug_seq
+        WHERE d.primaryid = $1
+        GROUP BY d.drug_seq, d.role_cod, d.drugname, d.prod_ai,
+                 d.route, d.dose_vbm, d.dose_amt, d.dose_unit,
+                 d.start_dt, d.end_dt
+        ORDER BY d.drug_seq NULLS LAST, d.drugname NULLS LAST
+    """
+    drug_rows = conn.execute(drugs_sql, [pid]).fetchall()
+    drug_cols = [desc[0] for desc in conn.description]
+    drugs = [_row_to_dict(drug_cols, row) for row in drug_rows]
 
-        reactions_sql = """
-            SELECT DISTINCT
-                r.pt AS reaction_pt
-            FROM latest_reac r
-            WHERE r.primaryid = $1
-            ORDER BY r.pt
-        """
-        reac_rows = conn.execute(reactions_sql, [pid]).fetchall()
-        reac_cols = [desc[0] for desc in conn.description]
-        reactions = [_row_to_dict(reac_cols, row) for row in reac_rows]
-
-    finally:
-        conn.close()
+    reactions_sql = """
+        SELECT DISTINCT
+            r.pt AS reaction_pt
+        FROM latest_reac r
+        WHERE r.primaryid = $1
+        ORDER BY r.pt
+    """
+    reac_rows = conn.execute(reactions_sql, [pid]).fetchall()
+    reac_cols = [desc[0] for desc in conn.description]
+    reactions = [_row_to_dict(reac_cols, row) for row in reac_rows]
 
     header["case_pk"] = header["case_version_pk"]
     header["drugs"] = drugs
@@ -670,7 +673,7 @@ def _row_to_dict(columns: list[str], row: tuple) -> dict:
         if isinstance(val, list):
             result[col] = [str(v) if v is not None else None for v in val]
         elif hasattr(val, "isoformat"):
-            result[col] = val.isoformat() if val is not None else None
+            result[col] = val.isoformat()
         else:
             result[col] = val
     return result

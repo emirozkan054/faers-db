@@ -7,7 +7,9 @@ from fastapi.testclient import TestClient
 
 from faersdb.api import app
 from faersdb.config import settings
+from faersdb.db import reset_shared_conn
 from faersdb.etl import build_query_tables
+from faersdb.queries import reset_warehouse_check
 
 client = TestClient(app)
 
@@ -38,6 +40,8 @@ def sample_warehouse(tmp_path, monkeypatch):
     warehouse = tmp_path / "warehouse"
     warehouse.mkdir()
     monkeypatch.setattr(settings, "warehouse_dir", str(warehouse))
+    reset_shared_conn()
+    reset_warehouse_check()
 
     pl.DataFrame(
         {
@@ -103,7 +107,7 @@ def sample_warehouse(tmp_path, monkeypatch):
                 date(2024, 4, 1),
                 date(2024, 4, 2),
             ],
-            "end_dt": [None, None, None, None, None],
+            "end_dt": [None, None, None, date(2024, 5, 1), None],
         }
     ).write_parquet(warehouse / "drug.parquet")
 
@@ -144,7 +148,12 @@ def sample_warehouse(tmp_path, monkeypatch):
                 date(2024, 4, 1),
                 date(2024, 4, 2),
             ],
-            "end_dt": [None, None, None, None],
+            "end_dt": [
+                date(2024, 1, 20),
+                None,
+                date(2024, 4, 28),
+                None,
+            ],
             "dur": [10, 5, 14, 3],
             "dur_cod": ["DY", "DY", "DY", "DY"],
         }
@@ -455,10 +464,150 @@ def test_search_with_date_filters():
     assert response.status_code == 200
 
 
+def test_therapy_start_filter():
+    response = client.post(
+        "/cases/search",
+        json=drug_search_payload(
+            drug_name="aspirin",
+            therapy_start_from="2024-04-01",
+            therapy_start_to="2024-04-30",
+            limit=10,
+        ),
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert data["items"][0]["case_version_pk"] == "1004"
+
+
+def test_therapy_end_filter():
+    response = client.post(
+        "/cases/search",
+        json=drug_search_payload(
+            drug_name="aspirin",
+            therapy_end_from="2025-01-01",
+            limit=10,
+        ),
+    )
+    assert response.status_code == 200
+    assert response.json()["total"] == 0
+
+
+def test_therapy_duration_filter():
+    response = client.post(
+        "/cases/search",
+        json=drug_search_payload(
+            drug_name="aspirin",
+            dur_min=10,
+            dur_max=20,
+            dur_cod="DY",
+            limit=10,
+        ),
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 2
+    pks = {item["case_version_pk"] for item in data["items"]}
+    assert pks == {"1001", "1004"}
+
+
+def test_dose_range_filter():
+    response = client.post(
+        "/cases/search",
+        json=drug_search_payload(
+            drug_name="aspirin",
+            dose_min=100,
+            dose_max=200,
+            limit=10,
+        ),
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert data["items"][0]["case_version_pk"] == "1001"
+
+
+def test_dose_unit_filter():
+    response = client.post(
+        "/cases/search",
+        json=drug_search_payload(
+            drug_name="aspirin",
+            dose_unit="MG",
+            limit=10,
+        ),
+    )
+    assert response.status_code == 200
+    assert response.json()["total"] == 3
+
+
+def test_weight_filter():
+    response = client.post(
+        "/cases/search",
+        json=search_payload(
+            drug_terms=[{"drug_name": "aspirin"}],
+            case_filters={"weight_min": 75, "weight_max": 100},
+            limit=10,
+        ),
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert data["items"][0]["case_version_pk"] == "1001"
+
+
+def test_case_outcome_filter():
+    response = client.post(
+        "/cases/search",
+        json=search_payload(
+            drug_terms=[{"drug_name": "aspirin"}],
+            case_filters={"case_outcome": "HO"},
+            limit=10,
+        ),
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 2
+    pks = {item["case_version_pk"] for item in data["items"]}
+    assert pks == {"1001", "1004"}
+
+
+def test_reporter_type_filter():
+    response = client.post(
+        "/cases/search",
+        json=search_payload(
+            drug_terms=[{"drug_name": "aspirin"}],
+            case_filters={"reporter_type": "HP"},
+            limit=10,
+        ),
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 2
+    pks = {item["case_version_pk"] for item in data["items"]}
+    assert pks == {"1001", "1004"}
+
+
+def test_case_outcome_only_filter():
+    """Case outcome alone (no drug/reaction concepts) should work as a case filter."""
+    response = client.post(
+        "/cases/search",
+        json=search_payload(
+            case_filters={"case_outcome": "OT"},
+            limit=10,
+        ),
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert data["items"][0]["case_version_pk"] == "1002"
+
+
 def test_missing_query_tables_return_rebuild_message(tmp_path, monkeypatch):
     warehouse = tmp_path / "missing-derived-warehouse"
     warehouse.mkdir()
     monkeypatch.setattr(settings, "warehouse_dir", str(warehouse))
+    reset_shared_conn()
+    reset_warehouse_check()
 
     pl.DataFrame(
         {

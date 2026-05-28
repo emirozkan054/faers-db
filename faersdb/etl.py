@@ -14,6 +14,7 @@ import duckdb
 import polars as pl
 import typer
 
+from faersdb.config import sql_string
 from faersdb.detect import discover_files
 from faersdb.manifest import discover_quarters
 
@@ -343,13 +344,8 @@ def _collect_deleted_ids(
 # ─── Core Build Logic ─────────────────────────────────────────────────────────
 
 
-def _sql_string(value: str) -> str:
-    """Return a single-quoted DuckDB SQL string literal."""
-    return "'" + value.replace("'", "''") + "'"
-
-
 def _sql_string_list(values: list[str]) -> str:
-    return "[" + ", ".join(_sql_string(value) for value in values) + "]"
+    return "[" + ", ".join(sql_string(value) for value in values) + "]"
 
 
 def _finalize_shards(
@@ -369,14 +365,14 @@ def _finalize_shards(
 
     con = duckdb.connect()
     try:
-        con.execute(f"SET memory_limit={_sql_string(memory_limit)}")
+        con.execute(f"SET memory_limit={sql_string(memory_limit)}")
         con.execute(f"SET threads={max(1, threads)}")
-        con.execute(f"SET temp_directory={_sql_string(str(temp_dir))}")
+        con.execute(f"SET temp_directory={sql_string(str(temp_dir))}")
         paths_sql = _sql_string_list([str(path) for path in shard_paths])
         con.execute(
             "COPY ("
             f"SELECT DISTINCT * FROM read_parquet({paths_sql}, union_by_name=true)"
-            f") TO {_sql_string(str(temp_output))} "
+            f") TO {sql_string(str(temp_output))} "
             "(FORMAT PARQUET, COMPRESSION SNAPPY)"
         )
     finally:
@@ -532,12 +528,12 @@ def _copy_query_to_parquet(
     temp_output = output_path.with_name(f".{output_path.name}.tmp")
     temp_output.unlink(missing_ok=True)
     con.execute(
-        f"COPY ({query}) TO {_sql_string(str(temp_output))} "
+        f"COPY ({query}) TO {sql_string(str(temp_output))} "
         "(FORMAT PARQUET, COMPRESSION SNAPPY)"
     )
     temp_output.replace(output_path)
     return con.execute(
-        f"SELECT count(*)::int FROM read_parquet({_sql_string(str(output_path))})"
+        f"SELECT count(*)::int FROM read_parquet({sql_string(str(output_path))})"
     ).fetchone()[0]
 
 
@@ -548,7 +544,7 @@ def _register_parquet_view(
 ) -> None:
     con.execute(
         f"CREATE OR REPLACE VIEW {table_name} AS "
-        f"SELECT * FROM read_parquet({_sql_string(str(parquet_path))})"
+        f"SELECT * FROM read_parquet({sql_string(str(parquet_path))})"
     )
 
 
@@ -660,9 +656,9 @@ def build_query_tables(
 
     con = duckdb.connect()
     try:
-        con.execute(f"SET memory_limit={_sql_string(memory_limit)}")
+        con.execute(f"SET memory_limit={sql_string(memory_limit)}")
         con.execute(f"SET threads={max(1, threads)}")
-        con.execute(f"SET temp_directory={_sql_string(str(temp_dir))}")
+        con.execute(f"SET temp_directory={sql_string(str(temp_dir))}")
 
         for spec in TABLE_SPECS.values():
             table_name = spec["output"].removesuffix(".parquet")

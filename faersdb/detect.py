@@ -11,22 +11,26 @@ def detect_table_kind(path: Path) -> str | None:
     return None
 
 
-def is_data_file(path: Path) -> bool:
-    if not path.is_file():
-        return False
-
-    name = path.name.upper()
+def is_data_filename(name: str) -> bool:
+    """Check whether a filename looks like a FAERS data file (no filesystem)."""
+    upper = name.upper()
 
     # Ignore documentation / metadata files
     ignored_prefixes = ("README", "FAQ", "SIZE", "ASC_NTS", "STAT")
     ignored_suffixes = (".PDF", ".DOC", ".DOCX", ".XML")
 
-    if name.startswith(ignored_prefixes):
+    if upper.startswith(ignored_prefixes):
         return False
-    if name.endswith(ignored_suffixes):
+    if upper.endswith(ignored_suffixes):
         return False
 
-    return detect_table_kind(path) is not None
+    return detect_table_kind(Path(name)) is not None
+
+
+def is_data_file(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    return is_data_filename(path.name)
 
 
 def discover_files(folder: Path) -> list[tuple[str, Path]]:
