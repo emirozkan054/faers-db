@@ -18,6 +18,10 @@ def test_app_shell_is_served():
 
     assert response.status_code == 200
     assert "FAERS Research UI" in response.text
+    assert "FAERS Research Workbench" in response.text
+    assert "Query Builder" in response.text
+    assert "Case Inspector" in response.text
+    assert "workbench-layout" in response.text
     assert '/static/app.js' in response.text
     assert "Export Cases CSV" in response.text
     assert "Export Case Report JSON" in response.text
@@ -52,6 +56,9 @@ def test_static_app_javascript_is_served():
     assert "concept_mode" in response.text
     assert "primary_terms" not in response.text
     assert "Active ingredients" in response.text
+    assert "results-table-shell" in response.text
+    assert "Drug exposure" in response.text
+    assert "Case Inspector" not in response.text
     assert "reaction_outcome" not in response.text
     assert "downloadCsv" in response.text
     assert "downloadJson" in response.text

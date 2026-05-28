@@ -137,6 +137,38 @@ function arrayText(values) {
   return values.join(", ");
 }
 
+function valueText(value, fallback = "n/a") {
+  if (value === null || value === undefined || value === "") {
+    return fallback;
+  }
+  return String(value);
+}
+
+function compactList(values, limit = 4) {
+  const items = (values || []).filter((value) => value !== null && value !== undefined && value !== "");
+  if (items.length === 0) {
+    return "None";
+  }
+  const visible = items.slice(0, limit).map(String);
+  const remaining = items.length - visible.length;
+  return remaining > 0 ? `${visible.join(", ")} + ${remaining} more` : visible.join(", ");
+}
+
+function chipList(values, emptyLabel = "None") {
+  const items = (values || []).filter((value) => value !== null && value !== undefined && value !== "");
+  if (items.length === 0) {
+    return `<span class="chip">${escapeHtml(emptyLabel)}</span>`;
+  }
+  return items.map((value) => `<span class="chip">${escapeHtml(value)}</span>`).join("");
+}
+
+function dateRangeText(start, end) {
+  if (!start && !end) {
+    return "n/a";
+  }
+  return `${valueText(start, "unknown")} to ${valueText(end, "unknown")}`;
+}
+
 function emptyDrugTerm() {
   return Object.fromEntries(DRUG_TERM_FIELDS.map((field) => [field, ""]));
 }
@@ -668,43 +700,70 @@ function renderCaseResults(payload, request) {
     return;
   }
 
-  const rows = payload.items.map((item) => `
-    <tr>
-      <td><button class="ghost view-case" data-case-version-pk="${escapeHtml(item.case_version_pk)}">Open</button></td>
-      <td class="mono">${escapeHtml(item.source_report_id)}</td>
-      <td>${escapeHtml(item.source_quarter)}</td>
-      <td>${escapeHtml(item.report_type || "n/a")}</td>
-      <td>${escapeHtml(item.reporter_country || "n/a")}</td>
-      <td>${escapeHtml(item.sex_std || "n/a")} / ${escapeHtml(item.age_value ?? "n/a")} ${escapeHtml(item.age_unit || "")}</td>
-      <td>${escapeHtml(arrayText(item.drugs))}</td>
-      <td>${escapeHtml(arrayText(item.active_ingredients))}</td>
-      <td>${escapeHtml(arrayText(item.reactions))}</td>
-      <td>${escapeHtml(arrayText(item.outcomes))}</td>
-    </tr>
-  `).join("");
+  const rows = payload.items.map((item) => {
+    const patientText = `${valueText(item.sex_std)} / ${valueText(item.age_value)} ${valueText(item.age_unit, "")}`.trim();
+    const drugText = compactList(item.drugs, 3);
+    const activeIngredientText = compactList(item.active_ingredients, 3);
+    const reactionText = compactList(item.reactions, 5);
+    const outcomeText = compactList(item.outcomes, 4);
+
+    return `
+      <tr>
+        <td><button class="ghost view-case" data-case-version-pk="${escapeHtml(item.case_version_pk)}">Open</button></td>
+        <td class="mono wrap-cell">${escapeHtml(item.source_report_id)}</td>
+        <td>${escapeHtml(item.source_quarter)}</td>
+        <td>${escapeHtml(valueText(item.report_type))}</td>
+        <td>${escapeHtml(valueText(item.reporter_country))}</td>
+        <td class="wrap-cell">
+          <div class="cell-primary">${escapeHtml(patientText)}</div>
+          <span class="cell-muted">${escapeHtml(valueText(item.age_group, "No age group"))}</span>
+        </td>
+        <td class="list-cell" title="${escapeHtml(arrayText(item.drugs))}">
+          <div class="cell-primary">${escapeHtml(drugText)}</div>
+          <span class="cell-muted">Active ingredients: ${escapeHtml(activeIngredientText)}</span>
+        </td>
+        <td class="list-cell" title="${escapeHtml(arrayText(item.reactions))}">${escapeHtml(reactionText)}</td>
+        <td class="list-cell" title="${escapeHtml(arrayText(item.outcomes))}">${escapeHtml(outcomeText)}</td>
+      </tr>
+    `;
+  }).join("");
 
   caseResultsEl.innerHTML = `
-    <table>
-      <thead>
-        <tr>
-          <th>Detail</th>
-          <th>Report</th>
-          <th>Quarter</th>
-          <th>Type</th>
-          <th>Country</th>
-          <th>Demographics</th>
-          <th>Drugs</th>
-          <th>Active ingredients</th>
-          <th>Reactions</th>
-          <th>Outcomes</th>
-        </tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
+    <div class="results-table-shell" tabindex="0" aria-label="Case results">
+      <table class="results-table">
+        <colgroup>
+          <col style="width: 64px;">
+          <col style="width: 104px;">
+          <col style="width: 70px;">
+          <col style="width: 58px;">
+          <col style="width: 64px;">
+          <col style="width: 116px;">
+          <col style="width: 250px;">
+          <col style="width: 200px;">
+          <col style="width: 114px;">
+        </colgroup>
+        <thead>
+          <tr>
+            <th>Detail</th>
+            <th>Report</th>
+            <th>Quarter</th>
+            <th>Type</th>
+            <th>Country</th>
+            <th>Patient</th>
+            <th>Drug exposure</th>
+            <th>Reactions</th>
+            <th>Outcomes</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
   `;
 
   caseResultsEl.querySelectorAll(".view-case").forEach((button) => {
     button.addEventListener("click", () => {
+      caseResultsEl.querySelectorAll("tbody tr").forEach((row) => row.classList.remove("selected-row"));
+      button.closest("tr")?.classList.add("selected-row");
       loadCaseDetail(button.dataset.caseVersionPk);
     });
   });
@@ -713,48 +772,59 @@ function renderCaseResults(payload, request) {
 }
 
 function renderCaseDetail(payload) {
-  const drugBlocks = payload.drugs.length === 0
+  const reactionValues = (payload.reactions || []).map((reaction) => reaction.reaction_pt);
+  const drugs = payload.drugs || [];
+  const drugBlocks = drugs.length === 0
     ? '<p class="empty-state">No drug rows linked to this case version.</p>'
-    : payload.drugs.map((drug) => `
-        <div class="detail-block">
-          <strong>${escapeHtml(drug.drugname || "Unknown drug")}</strong>
-          <p class="hint">Active ingredient: ${escapeHtml(drug.prod_ai || "n/a")}</p>
-          <p class="hint">Role: ${escapeHtml(drug.role_cod || "n/a")} | Route: ${escapeHtml(drug.route || "n/a")}</p>
-          <p>Dose: ${escapeHtml(drug.dose_amt ?? "n/a")} ${escapeHtml(drug.dose_unit || "")}</p>
+    : drugs.map((drug) => {
+      const doseParts = [drug.dose_amt, drug.dose_unit].filter((value) => value !== null && value !== undefined && value !== "");
+      const doseText = drug.dose_vbm || (doseParts.length > 0 ? doseParts.join(" ") : "n/a");
+      return `
+        <article class="drug-card">
+          <strong>${escapeHtml(valueText(drug.drugname, "Unknown drug"))}</strong>
+          <div class="meta">
+            <div><strong>Role</strong>${escapeHtml(valueText(drug.role_cod))}</div>
+            <div><strong>Route</strong>${escapeHtml(valueText(drug.route))}</div>
+            <div><strong>Active ingredient</strong>${escapeHtml(valueText(drug.prod_ai))}</div>
+            <div><strong>Dose</strong>${escapeHtml(doseText)}</div>
+          </div>
           <p>Indications: ${escapeHtml(arrayText(drug.indications))}</p>
-          <p>Therapy window: ${escapeHtml(drug.therapy_start_dt || "n/a")} to ${escapeHtml(drug.therapy_end_dt || "n/a")}</p>
-        </div>
-      `).join("");
-
-  const reactionBlocks = payload.reactions.length === 0
-    ? '<p class="empty-state">No reactions linked to this case version.</p>'
-    : payload.reactions.map((reaction) => `
-        <div class="chip">${escapeHtml(reaction.reaction_pt)}</div>
-      `).join("");
+          <p>Therapy window: ${escapeHtml(dateRangeText(drug.therapy_start_dt, drug.therapy_end_dt))}</p>
+          <p>Drug dates: ${escapeHtml(dateRangeText(drug.start_dt, drug.end_dt))}</p>
+        </article>
+      `;
+    }).join("");
 
   caseDetailEl.innerHTML = `
-    <div class="detail-block">
+    <div class="case-overview">
+      <p class="eyebrow">Source report</p>
       <h3 class="mono">${escapeHtml(payload.source_report_id)}</h3>
       <div class="meta">
         <div><strong>Case</strong>${escapeHtml(payload.canonical_case_id)}</div>
         <div><strong>Quarter</strong>${escapeHtml(payload.source_quarter)}</div>
-        <div><strong>Version</strong>${escapeHtml(payload.case_version_num ?? "n/a")}</div>
-        <div><strong>Report type</strong>${escapeHtml(payload.report_type || "n/a")}</div>
-        <div><strong>I / F</strong>${escapeHtml(payload.initial_or_followup || "n/a")}</div>
-        <div><strong>Country</strong>${escapeHtml(payload.reporter_country || "n/a")}</div>
-        <div><strong>Sex / Age</strong>${escapeHtml(payload.sex_std || "n/a")} / ${escapeHtml(payload.age_value ?? "n/a")} ${escapeHtml(payload.age_unit || "")}</div>
-        <div><strong>Age group / Weight</strong>${escapeHtml(payload.age_group || "n/a")} / ${escapeHtml(payload.weight_kg ?? "n/a")}</div>
+        <div><strong>Version</strong>${escapeHtml(valueText(payload.case_version_num))}</div>
+        <div><strong>Report type</strong>${escapeHtml(valueText(payload.report_type))}</div>
+        <div><strong>I / F</strong>${escapeHtml(valueText(payload.initial_or_followup))}</div>
+        <div><strong>Country</strong>${escapeHtml(valueText(payload.reporter_country))}</div>
+        <div><strong>Sex / Age</strong>${escapeHtml(valueText(payload.sex_std))} / ${escapeHtml(valueText(payload.age_value))} ${escapeHtml(valueText(payload.age_unit, ""))}</div>
+        <div><strong>Age group / Weight</strong>${escapeHtml(valueText(payload.age_group))} / ${escapeHtml(valueText(payload.weight_kg))}</div>
       </div>
-      <p class="hint">Outcomes: ${escapeHtml(arrayText(payload.outcomes))}</p>
-      <p class="hint">Reporter types: ${escapeHtml(arrayText(payload.reporter_types))}</p>
     </div>
-    <section>
-      <h3>Drugs</h3>
-      <div class="stack">${drugBlocks}</div>
+    <section class="inspector-section">
+      <h3>Outcomes</h3>
+      <div class="chips">${chipList(payload.outcomes, "No outcomes linked")}</div>
     </section>
-    <section>
+    <section class="inspector-section">
       <h3>Reactions</h3>
-      <div class="chips">${reactionBlocks}</div>
+      <div class="chips">${chipList(reactionValues, "No reactions linked")}</div>
+    </section>
+    <section class="inspector-section">
+      <h3>Reporter</h3>
+      <div class="chips">${chipList(payload.reporter_types, "No reporter types linked")}</div>
+    </section>
+    <section class="inspector-section">
+      <h3>Drug Exposure</h3>
+      <div class="stack">${drugBlocks}</div>
     </section>
   `;
 }
